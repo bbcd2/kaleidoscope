@@ -11,3 +11,4 @@ frontend/vite.config.ts.timestamp-*
 frontend/deploy.tar.xz
 
 backend/target
+backend/Cargo.lock
