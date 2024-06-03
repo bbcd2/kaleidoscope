@@ -1,6 +1,10 @@
 //! Callbacks for any given connection
 
-use crate::connection::messages::{ClientMessage, ServerMessage};
+use crate::{
+    connection::messages::ServerMessage,
+    database::{Database, Video},
+    ClientConnections,
+};
 
 use std::{
     fmt::{Display, Result as FmtResult},
@@ -8,9 +12,9 @@ use std::{
     sync::Arc,
 };
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context as _, Result};
 use futures_util::Future;
-use log::{debug, info};
+use tokio::sync::Mutex;
 use warp::filters::ws::Message;
 
 pub enum CallbackError {
@@ -38,6 +42,9 @@ impl Display for CallbackError {
 #[derive(Clone)]
 pub struct MessageHandlerState {
     pub client_id: usize,
+    pub clients: ClientConnections,
+    // Although [`Database`] implements Clone, it doesn't implement Send + Sync
+    pub database: Arc<Mutex<Database>>,
 }
 
 /// A response from a message handler or callback that determines what to return to the client
@@ -45,39 +52,30 @@ pub type MessageHandlerResponse = Result<Option<ServerMessage>, CallbackError>;
 pub type AsynchronousMessageHandlerResponse =
     Pin<Box<dyn Future<Output = MessageHandlerResponse> + Send>>;
 
-pub fn on_connect(state: Arc<MessageHandlerState>) -> AsynchronousMessageHandlerResponse {
-    Box::pin(async move { Ok(Some(ServerMessage::ClientHello)) })
+pub fn on_connect(_state: Arc<MessageHandlerState>) -> AsynchronousMessageHandlerResponse {
+    Box::pin(async move { Ok(None) })
 }
-
-pub fn on_disconnect(state: Arc<MessageHandlerState>) -> AsynchronousMessageHandlerResponse {
-    Box::pin(async move {
-        info!("client with ID {id} disconnected", id = state.client_id);
-        Ok(None)
-    })
+pub fn on_disconnect(_state: Arc<MessageHandlerState>) -> AsynchronousMessageHandlerResponse {
+    Box::pin(async move { Ok(None) })
 }
-
 pub fn on_message(
-    state: Arc<MessageHandlerState>,
-    message: Message,
+    _state: Arc<MessageHandlerState>,
+    _message: Message,
 ) -> AsynchronousMessageHandlerResponse {
-    Box::pin(async move {
-        debug!(
-            "client with ID {id} sent [unparsed] message `{message:?}`",
-            id = state.client_id,
-            message = message.to_str()
-        );
-        let message = message
-            .to_str()
-            .map_err(|_| CallbackError::Loud(anyhow!("websocket message was not a `str`")))?;
-        info!(
-            "client with ID {id} sent message `{message}`",
-            id = state.client_id,
-            message = message.trim(),
-        );
-        // Parse
-        let _message = serde_json::from_str::<ClientMessage>(message)
-            .map_err(|e| CallbackError::Loud(anyhow!("could not parse message: {e}")))?;
+    Box::pin(async move { Ok(None) })
+}
 
-        Ok(None)
-    })
+pub async fn alert_clients_of_database_change(
+    clients: ClientConnections,
+    change: &Video,
+) -> Result<()> {
+    let clients = clients.read().await;
+    for (id, client) in clients.iter() {
+        client
+            .send(Message::text(serde_json::to_string(
+                &ServerMessage::DatabaseUpdate(change.clone()),
+            )?))
+            .with_context(|| anyhow!("sending to client {id}"))?;
+    }
+    Ok(())
 }

@@ -1,10 +1,5 @@
-/** A reason for a failed post */
-export enum FailedPostReason {
-    TooLong = "Your recording is too long. Please try again or contact us to increase your limit.",
-    StartBeforeEnd = "The start timestamp is before the end timestamp.",
-    Future = "We can't record the future(!)",
-    FailedSend = "Your request could not be sent to the server.",
-    ServerError = "An internal server error occurred!",
+export enum WebsocketServerMessage {
+    "ClientHello",
 }
 
 /** Duration units -- 60**unit */

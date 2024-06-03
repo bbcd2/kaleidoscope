@@ -6,6 +6,7 @@ use crate::{
         MessageHandlerState,
     },
     connection::messages::ServerMessage,
+    database::Database,
     ClientConnections, NEXT_CLIENT_ID,
 };
 
@@ -13,17 +14,18 @@ use std::sync::{atomic::Ordering::Relaxed, Arc};
 
 use futures_util::{SinkExt as _, StreamExt as _, TryFutureExt as _};
 use log::error;
-use tokio::sync::mpsc::unbounded_channel;
+use tokio::sync::{mpsc::unbounded_channel, Mutex};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use warp::ws::{Message, WebSocket};
 
 /// Messages
 pub mod messages {
-    #[derive(serde::Deserialize, serde::Serialize)]
-    pub enum ClientMessage {}
-    #[derive(serde::Deserialize, serde::Serialize)]
+    use crate::database::Video;
+
+    #[derive(serde::Serialize)]
     pub enum ServerMessage {
         ClientHello,
+        DatabaseUpdate(Video),
         Error(String),
     }
 }
@@ -44,6 +46,7 @@ pub async fn handle_connection<C, D, M>(
     on_message_callback: M,
     /* State */
     clients: ClientConnections,
+    database: Database,
 ) where
     C: Fn(Arc<MessageHandlerState>) -> AsynchronousMessageHandlerResponse,
     D: Fn(Arc<MessageHandlerState>) -> AsynchronousMessageHandlerResponse,
@@ -57,7 +60,11 @@ pub async fn handle_connection<C, D, M>(
     let (private_tx, mut rx) = (tx.clone(), UnboundedReceiverStream::new(rx));
 
     // Helper for a callback with error handling and sending through our Tx
-    let callback_state = Arc::new(MessageHandlerState { client_id });
+    let callback_state = Arc::new(MessageHandlerState {
+        clients: Arc::clone(&clients),
+        client_id,
+        database: Arc::new(Mutex::new(database)),
+    });
     let callback_handle = |response: MessageHandlerResponse, callback: &'static str| match response
     {
         Ok(Some(send_back)) => {

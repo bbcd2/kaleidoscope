@@ -1,28 +1,8 @@
 <script lang="ts">
     import moment from "moment-timezone";
     import { onMount } from "svelte";
-    import { enhance } from "$app/forms";
 
-    import { DurationUnit, SOURCES, Status, lookupSourceById, getMaxDay } from "$lib";
-
-    import {
-        Label,
-        Input,
-        Select,
-        Button,
-        Toast,
-        Modal,
-        Video,
-        Progressbar,
-        Checkbox,
-    } from "flowbite-svelte";
-    import {
-        ArrowRightOutline,
-        LinkOutline,
-        PaperPlaneOutline,
-        BullhornSolid,
-    } from "flowbite-svelte-icons";
-    import Error from "./+error.svelte";
+    import { DurationUnit, SOURCES, WebsocketClientMessage, getMaxDay } from "$lib";
 
     const [flashSnackbar, stopFlashSnackbar] = (function () {
         // fixme: use signals and NOT dom manipulation in javascript framework
@@ -68,7 +48,6 @@
     onMount(() => {
         // Connect to backend websocket
         flashSnackbar("Connecting to the server", false);
-        console.log("Help");
         ws = new WebSocket("ws://localhost:8081/websocket"); // fixme: debug url
         ws.onopen = () => {
             wsConnected = true;
