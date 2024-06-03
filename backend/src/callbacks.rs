@@ -45,13 +45,10 @@ pub type MessageHandlerResponse = Result<Option<ServerMessage>, CallbackError>;
 pub type AsynchronousMessageHandlerResponse =
     Pin<Box<dyn Future<Output = MessageHandlerResponse> + Send>>;
 
-/// Initialize handles to the client. Note that the client is not in a room until they send
-/// a join message.
 pub fn on_connect(state: Arc<MessageHandlerState>) -> AsynchronousMessageHandlerResponse {
-    Box::pin(async move { Ok(None) })
+    Box::pin(async move { Ok(Some(ServerMessage::ClientHello)) })
 }
 
-/// Clean up all handles to the client
 pub fn on_disconnect(state: Arc<MessageHandlerState>) -> AsynchronousMessageHandlerResponse {
     Box::pin(async move {
         info!("client with ID {id} disconnected", id = state.client_id);
@@ -59,7 +56,6 @@ pub fn on_disconnect(state: Arc<MessageHandlerState>) -> AsynchronousMessageHand
     })
 }
 
-/// Call the message handlers for a given message from the client
 pub fn on_message(
     state: Arc<MessageHandlerState>,
     message: Message,
@@ -80,7 +76,7 @@ pub fn on_message(
         );
         // Parse
         let _message = serde_json::from_str::<ClientMessage>(message)
-            .map_err(|e| CallbackError::Silent(anyhow!("could not parse message: {e}")))?;
+            .map_err(|e| CallbackError::Loud(anyhow!("could not parse message: {e}")))?;
 
         Ok(None)
     })

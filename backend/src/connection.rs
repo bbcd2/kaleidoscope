@@ -23,6 +23,7 @@ pub mod messages {
     pub enum ClientMessage {}
     #[derive(serde::Deserialize, serde::Serialize)]
     pub enum ServerMessage {
+        ClientHello,
         Error(String),
     }
 }

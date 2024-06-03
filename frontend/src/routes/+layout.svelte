@@ -1,30 +1,10 @@
 <script lang="ts">
-    import { goto, invalidate } from "$app/navigation";
-    import { onMount } from "svelte";
-    import "../app.css";
-    import {
-        Navbar,
-        NavBrand,
-        NavLi,
-        NavUl,
-        NavHamburger,
-        Dropdown,
-        DropdownItem,
-        DropdownDivider,
-        DarkMode,
-        Button,
-        Footer,
-        FooterBrand,
-        FooterCopyright,
-        FooterIcon,
-        FooterLink,
-        FooterLinkGroup,
-        Banner,
-    } from "flowbite-svelte";
-    import { ChevronDownOutline, BullhornSolid } from "flowbite-svelte-icons";
     import { page } from "$app/stores";
+
+    import "../app.css";
+    import { Navbar, NavBrand, NavLi, NavUl, NavHamburger, DarkMode } from "flowbite-svelte";
+
     $: activeUrl = $page.url.pathname;
-    import {} from "flowbite-svelte";
 
     const btnClass =
         "text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg text-xl p-2 center-content";

@@ -1,4 +1,4 @@
-//! The backend for TackyToe!!!
+//! The backend for BBCD!!!
 
 pub mod callbacks;
 pub mod connection;
@@ -22,6 +22,15 @@ pub static NEXT_CLIENT_ID: AtomicUsize = AtomicUsize::new(0);
 
 #[tokio::main]
 async fn main() {
+    std::env::set_var(
+        "RUST_LOG",
+        std::env::var("RUST_LOG")
+            .and_then(|arg| match arg.len() {
+                0 => Err(std::env::VarError::NotPresent),
+                _ => Ok(arg),
+            })
+            .unwrap_or("debug".to_string()),
+    );
     pretty_env_logger::init();
     info!("hello from the bbcd backend!");
     let log = warp::log("bbcd-backend");
