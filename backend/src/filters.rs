@@ -1,7 +1,9 @@
 use std::{collections::HashMap, fmt::Debug};
 
 use anyhow::anyhow;
-use serde::de::DeserializeOwned;
+use serde::{de::DeserializeOwned, Deserialize};
+use tokio::runtime::Handle;
+use uuid::Uuid;
 use warp::{
     reject::{self, Reject},
     Filter,
@@ -9,6 +11,7 @@ use warp::{
 
 use crate::{
     callbacks::{on_connect, on_disconnect, on_message},
+    clip::clip,
     connection::handle_connection,
     database::{Database, PoolPg},
     tree::get_warp_logger,
@@ -59,7 +62,8 @@ fn with_json_body<T: DeserializeOwned + Send>(
 
 /// GET /
 pub fn root_route() -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
-    warp::path!()
+    warp::get()
+        .and(warp::path!())
         .and(warp::path::end())
         .map(|| "hey, welcome to the bbcd backend! uh, please leave /lh".to_owned())
         .with(warp::cors())
@@ -70,7 +74,9 @@ pub fn root_route() -> impl Filter<Extract = impl warp::Reply, Error = warp::Rej
 pub fn list_recordings(
     pool: PoolPg,
 ) -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
-    warp::path!("list-recordings")
+    warp::get()
+        .and(warp::path!("list-recordings"))
+        .and(warp::path::end())
         .and(warp::query::<HashMap<String, String>>())
         .and(with_db_access_manager(pool))
         .and_then(
@@ -93,6 +99,38 @@ pub fn list_recordings(
         .with(warp::log::custom(get_warp_logger))
 }
 
+/// POST /clip
+#[derive(Deserialize)]
+struct ClipParameters {
+    pub start_timestamp: usize,
+    pub end_timestamp: usize,
+    pub channel: usize,
+    pub encode: bool,
+}
+
+pub fn clip_route(
+    pool: PoolPg,
+    clip_runtime: Handle,
+) -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
+    warp::post()
+        .and(warp::path!("clip"))
+        .and(warp::path::end())
+        .and(with_json_body::<ClipParameters>())
+        .and(with_db_access_manager(pool))
+        .map(move |parameters: ClipParameters, database: Database| {
+            let uuid = Uuid::new_v4().to_string();
+            clip_runtime.spawn(clip(
+                uuid.clone(),
+                parameters.channel,
+                (parameters.start_timestamp, parameters.end_timestamp),
+                parameters.encode,
+                database,
+            ));
+            uuid
+        })
+}
+
+/// GET /websocket
 pub fn websocket_route(
     pool: PoolPg,
 ) -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
@@ -100,7 +138,8 @@ pub fn websocket_route(
         let clients = ClientConnections::default();
         warp::any().map(move || clients.clone())
     };
-    warp::path!("websocket")
+    warp::get()
+        .and(warp::path!("websocket"))
         .and(warp::path::end())
         .and(warp::ws())
         /* State */
