@@ -1,18 +1,30 @@
 use crate::{
-    callbacks::alert_clients_of_database_change,
-    database::{Database, NewRecording},
+    database::{Database, RecordingUpdate},
+    websocket_callbacks::alert_clients_of_database_change,
     ClientConnections,
 };
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
 use chrono::DateTime;
 use log::{error, info};
+use serde::Deserialize;
 use tokio::fs::{create_dir_all, remove_dir_all};
 
+/// Where to store segment and job files
 const TEMP_DIRECTORY: &str = "temp";
 
+/// Parameters from the request
+#[derive(Deserialize)]
+pub struct ClipParameters {
+    pub start_timestamp: usize,
+    pub end_timestamp: usize,
+    pub channel: usize,
+    pub encode: bool,
+}
+
+/// Clip progress stage
 #[derive(Clone, Copy, Debug)]
 #[repr(usize)]
 pub enum Stage {
@@ -27,19 +39,20 @@ pub enum Stage {
     #[allow(non_camel_case_types)]
     _SENTINEL_MAX_OK = 7,
     // Error statuses
-    DownloadingFailed = 10,
-    CombiningFailed = 11,
-    EncodingFailed = 12,
-    UploadingFailed = 13,
+    FailedNondescript = 10,
+    DownloadingFailed = 11,
+    CombiningFailed = 12,
+    EncodingFailed = 13,
+    UploadingFailed = 14,
 }
 impl Stage {
-    pub fn error_variant(self) -> Option<Self> {
+    pub fn error_variant(self) -> Self {
         match self {
-            Self::Downloading => Some(Self::DownloadingFailed),
-            Self::Combining => Some(Self::CombiningFailed),
-            Self::Encoding => Some(Self::EncodingFailed),
-            Self::Uploading => Some(Self::UploadingFailed),
-            _ => None,
+            Self::Downloading => Self::DownloadingFailed,
+            Self::Combining => Self::CombiningFailed,
+            Self::Encoding => Self::EncodingFailed,
+            Self::Uploading => Self::UploadingFailed,
+            _ => Self::FailedNondescript,
         }
     }
 }
@@ -51,10 +64,12 @@ fn calculate_segment_idx(timestamp: usize) -> usize {
     (((timestamp as f64) / (192. / 50.)).floor() as usize) + MAGIC_OFFSET
 }
 
+/// Download segments to the resultant directory
 async fn download_segments(
     uuid: &str,
     channel: usize,
     segment_idx_bounds: [usize; 2],
+    target_directory: &Path,
 ) -> Result<()> {
     Err(anyhow!("not implemented sorry :3"))?;
     Ok(())
@@ -68,7 +83,7 @@ pub async fn clip(
     encode: bool,
     mut database: Database,
 ) -> Result<()> {
-    info!("starting clip for {uuid}");
+    info!("{uuid}: starting clip");
 
     let mut stage = Stage::Initializing;
 
@@ -78,7 +93,7 @@ pub async fn clip(
             .naive_utc())
     });
 
-    let mut recording_row = NewRecording {
+    let mut recording_row = RecordingUpdate {
         user_id: None,
         uuid: &uuid,
         rec_start: &timestamp_bounds.next().unwrap()?,
@@ -95,23 +110,24 @@ pub async fn clip(
         let segment_idx_bounds = timeframe.map(|bound| calculate_segment_idx(bound));
 
         create_dir_all(&output_directory).await?;
-        download_segments(&uuid, channel, segment_idx_bounds).await?;
+        download_segments(&uuid, channel, segment_idx_bounds, &output_directory).await?;
 
         Ok::<_, anyhow::Error>(())
     };
-    match closure.await {
-        Err(e) => {
-            error!("failed on {stage:?}. cleaning up");
 
-            stage = stage.error_variant().unwrap_or(stage);
-            recording_row.stage = stage as i32;
-            recording_row.status = e.to_string();
-            alert_clients_of_database_change(clients, &database.update_recording(&recording_row)?)
-                .await?;
+    let e = match closure.await {
+        Err(e) => e,
+        Ok(()) => return Ok(()),
+    };
 
-            remove_dir_all(&output_directory).await?;
-            Err(e)
-        }
-        okay => okay,
-    }
+    error!("{uuid}: failed on {stage:?}: {e}");
+    error!("{uuid}: cleaning up");
+
+    stage = stage.error_variant();
+    recording_row.stage = stage as i32;
+    recording_row.status = e.to_string();
+    alert_clients_of_database_change(clients, &database.update_recording(&recording_row)?).await?;
+
+    remove_dir_all(&output_directory).await?;
+    Err(e)
 }

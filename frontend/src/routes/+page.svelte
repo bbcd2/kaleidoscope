@@ -23,7 +23,6 @@
 
     import { DurationUnit, SOURCES, getMaxDay, lookupSourceById, Stage } from "$lib";
 
-    /** Flash a message to the snackbar */
     const [flashSnackbar, stopFlashSnackbar] = (function () {
         let snackbar = null;
         try {
@@ -46,43 +45,9 @@
         ];
     })();
 
-    /** Get some recordings */
-    const getRecordings = async () => {
-        const response = await axios.get(
-            `http://localhost:8081/list-recordings?start=0&count=15` /* fixme */,
-        );
-        if (response.status !== 200)
-            recordings = { obtained: false, error: `${response.data}`, recordings: undefined };
-        else
-            recordings = {
-                obtained: true,
-                error: undefined,
-                recordings: response.data,
-            };
-    };
-
-    /** Handle a websocket message */
-    const handleWsMessage = ({ data }: { data: string }) => {
-        console.debug(`websocket message: ${data}`);
-        let response;
-        try {
-            response = JSON.parse(data);
-        } catch (e) {
-            return flashSnackbar(`Failed to parse server response: ${data}`, true);
-        }
-        if (response.DatabaseUpdate) handleDatabaseUpdate(response.DatabaseUpdate);
-    };
-
-    const handleDatabaseUpdate = (recording: RecordingInfo) => {
-        const updateIdx = recordings.recordings!.findIndex((rec) => rec.uuid === recording.uuid);
-        if (updateIdx === -1) recordings.recordings!.splice(0, 0, recording);
-        else recordings.recordings![updateIdx] = recording;
-        recordings = recordings;
-    };
-
     let ws: null | WebSocket = null;
     let wsConnected: boolean = false;
-    onMount(() => {
+    const connectWs = () => {
         // Connect to backend websocket
         flashSnackbar("Connecting to the server", false);
         ws = new WebSocket("ws://localhost:8081/websocket" /* fixme */);
@@ -99,7 +64,41 @@
                           ' Check <a href="status.bbcd.uk.to">the status page</a>!',
                 true,
             );
+    };
+    const handleWsMessage = ({ data }: { data: string }) => {
+        console.debug(`websocket message: ${data}`);
+        let response;
+        try {
+            response = JSON.parse(data);
+        } catch (e) {
+            return flashSnackbar(`Failed to parse server response: ${data}`, true);
+        }
+        if (response.DatabaseUpdate) handleWsDatabaseUpdate(response.DatabaseUpdate);
+    };
+    const handleWsDatabaseUpdate = (recording: RecordingInfo) => {
+        const updateIdx = recordings.recordings!.findIndex((rec) => rec.uuid === recording.uuid);
+        if (updateIdx === -1) recordings.recordings!.splice(0, 0, recording);
+        else recordings.recordings![updateIdx] = recording;
+        recordings = recordings;
+    };
+
+    onMount(() => {
+        connectWs();
     });
+
+    const fetchRecordings = async () => {
+        const response = await axios.get(
+            `http://localhost:8081/list-recordings?start=0&count=15` /* fixme */,
+        );
+        if (response.status !== 200)
+            recordings = { obtained: false, error: `${response.data}`, recordings: undefined };
+        else
+            recordings = {
+                obtained: true,
+                error: undefined,
+                recordings: response.data,
+            };
+    };
 
     // Form and database
     interface RecordingInfo {
@@ -135,7 +134,7 @@
         currentDate.getMinutes(),
         currentDate.getSeconds(),
     ].map((x) => {
-        // We need to store these as strings for native input elements
+        // We need to store these as strings for input elements
         return `${x}`;
     });
     let durationUnit = DurationUnit.Minutes;
@@ -148,7 +147,7 @@
         startTimestamp = moment
             .tz(
                 [
-                    currentDate.getUTCFullYear(),
+                    currentDate.getUTCFullYear(), // Europe/London follows UTC+0 during December 31st - January 1st
                     parseInt(month) - 1,
                     parseInt(day),
                     parseInt(startHour),
@@ -163,7 +162,7 @@
     let channel = Object.values(SOURCES)[0][0];
 </script>
 
-{#await getRecordings()}
+{#await fetchRecordings()}
     <p class="italic text-center">Fetching recordings...</p>
 {/await}
 {#if recordings.error}

@@ -1,3 +1,5 @@
+//! Tree clearing for our logging service
+
 use log::info;
 use warp::filters::log::Info;
 
@@ -7,8 +9,9 @@ pub fn init_logger() {
     );
 }
 
+/// A filter to log a request. Ignores any 4xx response codes
 pub fn get_warp_logger(info: Info) {
-    if info.status() != warp::http::StatusCode::OK {
+    if info.status().as_u16() >= 400 && info.status().as_u16() < 500 {
         return;
     }
     info!(

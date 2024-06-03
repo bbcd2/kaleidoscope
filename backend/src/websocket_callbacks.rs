@@ -1,8 +1,6 @@
-//! Callbacks for any given connection
-
 use crate::{
-    connection::messages::ServerMessage,
     database::{Database, Recording},
+    websocket_connection::messages::ServerMessage,
     ClientConnections,
 };
 
@@ -14,6 +12,7 @@ use std::{
 
 use anyhow::{anyhow, Context as _, Result};
 use futures_util::Future;
+use log::error;
 use tokio::sync::Mutex;
 use warp::filters::ws::Message;
 
@@ -65,17 +64,32 @@ pub fn on_message(
     Box::pin(async move { Ok(None) })
 }
 
+/// Broadcast a recording row to all websocket clients
 pub async fn alert_clients_of_database_change(
     clients: ClientConnections,
     change: &Recording,
 ) -> Result<()> {
     let clients = clients.read().await;
-    for (id, client) in clients.iter() {
-        client
-            .send(Message::text(serde_json::to_string(
-                &ServerMessage::DatabaseUpdate(change.clone()),
-            )?))
-            .with_context(|| anyhow!("sending to client {id}"))?;
+    let errors = clients
+        .iter()
+        .filter_map(|(id, client)| {
+            let serialized =
+                match serde_json::to_string(&ServerMessage::DatabaseUpdate(change.clone())) {
+                    Ok(serialized) => serialized,
+                    Err(e) => return Some((*id, e.into())),
+                };
+            client
+                .send(Message::text(serialized))
+                .context("sending")
+                .err()
+                .map(|e| (*id, e))
+        })
+        .collect::<Vec<(usize, anyhow::Error)>>();
+    for (id, e) in &errors {
+        error!("alerting websocket connection {id} failed: {e}");
     }
-    Ok(())
+    match errors.len() {
+        0 => Ok(()),
+        count => Err(anyhow!("failed to alert {count} client(s)")),
+    }
 }

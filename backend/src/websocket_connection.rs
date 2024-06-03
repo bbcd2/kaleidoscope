@@ -1,12 +1,12 @@
 //! Facilitates a client's connection
 
 use crate::{
-    callbacks::{
+    database::Database,
+    websocket_callbacks::{
         AsynchronousMessageHandlerResponse, CallbackError, MessageHandlerResponse,
         MessageHandlerState,
     },
-    connection::messages::ServerMessage,
-    database::Database,
+    websocket_connection::messages::ServerMessage,
     ClientConnections, NEXT_CLIENT_ID,
 };
 
@@ -16,9 +16,12 @@ use futures_util::{SinkExt as _, StreamExt as _, TryFutureExt as _};
 use log::error;
 use tokio::sync::{mpsc::unbounded_channel, Mutex};
 use tokio_stream::wrappers::UnboundedReceiverStream;
-use warp::ws::{Message, WebSocket};
+use warp::{
+    ws::{Message, WebSocket},
+    Filter,
+};
 
-/// Messages
+/// Websocket messages
 pub mod messages {
     use crate::database::Recording;
 
@@ -119,4 +122,13 @@ pub async fn handle_connection<C, D, M>(
         "disconnection",
     );
     clients.write().await.remove(&client_id);
+}
+
+/// Filter for accessing the client connections
+pub fn with_clients(
+    clients: ClientConnections,
+) -> impl Filter<Extract = (ClientConnections,), Error = warp::Rejection> + Clone {
+    warp::any()
+        .map(move || clients.clone())
+        .and_then(|clients: ClientConnections| async move { Ok::<_, warp::Rejection>(clients) })
 }

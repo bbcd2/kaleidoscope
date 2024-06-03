@@ -1,12 +1,17 @@
 //! The backend for BBCD!!!
 
-pub mod callbacks;
 pub mod clip;
-pub mod connection;
 pub mod database;
 pub mod filters;
 pub mod schema;
 pub mod tree;
+pub mod websocket_callbacks;
+pub mod websocket_connection;
+
+use crate::{
+    filters::{clip_route, list_recordings, root_route, websocket_route},
+    tree::init_logger,
+};
 
 use std::{
     collections::HashMap,
@@ -14,20 +19,14 @@ use std::{
     thread,
 };
 
-use anyhow::{Context as _, Result};
+use anyhow::Result;
 use dotenvy::dotenv;
-use futures_util::future;
 use log::info;
 use tokio::{
     runtime::Runtime,
     sync::{mpsc::UnboundedSender, RwLock},
 };
 use warp::{ws::Message, Filter as _};
-
-use filters::{list_recordings, root_route, websocket_route};
-use tree::init_logger;
-
-use crate::filters::clip_route;
 
 pub const PORT: u16 = 8081;
 

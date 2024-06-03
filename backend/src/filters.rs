@@ -1,24 +1,22 @@
-use std::{collections::HashMap, fmt::Debug};
-
-use anyhow::anyhow;
-use serde::{de::DeserializeOwned, Deserialize};
-use tokio::runtime::Handle;
-use uuid::Uuid;
-use warp::{
-    reject::{self, Reject},
-    Filter,
-};
-
 use crate::{
-    callbacks::{on_connect, on_disconnect, on_message},
-    clip::clip,
-    connection::handle_connection,
-    database::{Database, PoolPg},
+    clip::{clip, ClipParameters},
+    database::{with_database, Database, PoolPg},
     tree::get_warp_logger,
+    websocket_callbacks::{on_connect, on_disconnect, on_message},
+    websocket_connection::{handle_connection, with_clients},
     ClientConnections,
 };
 
-struct ServerError {
+use std::{collections::HashMap, fmt::Debug};
+
+use anyhow::anyhow;
+use serde::de::DeserializeOwned;
+use tokio::runtime::Handle;
+use uuid::Uuid;
+use warp::{reject::Reject, Filter};
+
+/// Wrapper for a Warp rejection message
+pub struct ServerError {
     message: String,
 }
 impl ServerError {
@@ -38,30 +36,7 @@ impl Debug for ServerError {
 }
 impl Reject for ServerError {}
 
-fn with_db_access_manager(
-    pool: PoolPg,
-) -> impl Filter<Extract = (Database,), Error = warp::Rejection> + Clone {
-    warp::any()
-        .map(move || pool.clone())
-        .and_then(|pool: PoolPg| async move {
-            match pool.get() {
-                Ok(pool) => Ok(Database { connection: pool }),
-                Err(e) => Err(reject::custom(ServerError::new(anyhow!(
-                    "failed to access database: {e}"
-                )))),
-            }
-        })
-}
-
-fn with_clients(
-    clients: ClientConnections,
-) -> impl Filter<Extract = (ClientConnections,), Error = warp::Rejection> + Clone {
-    warp::any()
-        .map(move || clients.clone())
-        .and_then(|clients: ClientConnections| async move { Ok::<_, warp::Rejection>(clients) })
-}
-
-#[allow(unused)] // todo
+/// Filter for accepting a JSON body
 fn with_json_body<T: DeserializeOwned + Send>(
 ) -> impl Filter<Extract = (T,), Error = warp::Rejection> + Clone {
     const MAX_SIZE: u64 = 4 * 1024 /* KiB */;
@@ -86,7 +61,7 @@ pub fn list_recordings(
         .and(warp::path!("list-recordings"))
         .and(warp::path::end())
         .and(warp::query::<HashMap<String, String>>())
-        .and(with_db_access_manager(pool))
+        .and(with_database(pool))
         .and_then(
             |query: HashMap<String, String>, mut database: Database| async move {
                 let (start, count) = (query.get("start"), query.get("count"));
@@ -108,14 +83,6 @@ pub fn list_recordings(
 }
 
 /// POST /clip
-#[derive(Deserialize)]
-struct ClipParameters {
-    pub start_timestamp: usize,
-    pub end_timestamp: usize,
-    pub channel: usize,
-    pub encode: bool,
-}
-
 pub fn clip_route(
     pool: PoolPg,
     clients: ClientConnections,
@@ -126,7 +93,7 @@ pub fn clip_route(
         .and(warp::path::end())
         .and(with_json_body::<ClipParameters>())
         .and(with_clients(clients))
-        .and(with_db_access_manager(pool))
+        .and(with_database(pool))
         .map(
             move |parameters: ClipParameters, clients: ClientConnections, database: Database| {
                 let uuid = Uuid::new_v4().to_string();
@@ -155,7 +122,7 @@ pub fn websocket_route(
         .and(warp::ws())
         /* State */
         .and(with_clients(clients))
-        .and(with_db_access_manager(pool))
+        .and(with_database(pool))
         .map(
             |ws: warp::ws::Ws, clients: ClientConnections, database: Database| {
                 ws.on_upgrade(move |socket| {
