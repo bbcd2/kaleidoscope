@@ -44,12 +44,13 @@ impl Database {
             .load(&mut self.connection)?;
         Ok(recordings_list)
     }
-    pub fn update_recording(&mut self, recording: &NewRecording) -> Result<()> {
+    pub fn update_recording(&mut self, recording: &NewRecording) -> Result<Recording> {
         use crate::schema::recordings::dsl::*;
-        diesel::update(recordings.filter(uuid.eq(recording.uuid)))
+        let recording = diesel::update(recordings.filter(uuid.eq(recording.uuid)))
             .set(recording)
-            .execute(&mut self.connection)?;
-        Ok(())
+            .get_result(&mut self.connection)
+            .context("failed to update recording row")?;
+        Ok(recording)
     }
 }
 

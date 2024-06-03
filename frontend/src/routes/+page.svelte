@@ -70,6 +70,14 @@
         } catch (e) {
             return flashSnackbar(`Failed to parse server response: ${data}`, true);
         }
+        if (response.DatabaseUpdate) handleDatabaseUpdate(response.DatabaseUpdate);
+    };
+
+    const handleDatabaseUpdate = (recording: RecordingInfo) => {
+        const updateIdx = recordings.recordings!.findIndex((rec) => rec.uuid === recording.uuid);
+        if (updateIdx === -1) recordings.recordings!.splice(0, 0, recording);
+        else recordings.recordings![updateIdx] = recording;
+        recordings = recordings;
     };
 
     let ws: null | WebSocket = null;

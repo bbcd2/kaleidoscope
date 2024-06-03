@@ -53,6 +53,14 @@ fn with_db_access_manager(
         })
 }
 
+fn with_clients(
+    clients: ClientConnections,
+) -> impl Filter<Extract = (ClientConnections,), Error = warp::Rejection> + Clone {
+    warp::any()
+        .map(move || clients.clone())
+        .and_then(|clients: ClientConnections| async move { Ok::<_, warp::Rejection>(clients) })
+}
+
 #[allow(unused)] // todo
 fn with_json_body<T: DeserializeOwned + Send>(
 ) -> impl Filter<Extract = (T,), Error = warp::Rejection> + Clone {
@@ -110,41 +118,43 @@ struct ClipParameters {
 
 pub fn clip_route(
     pool: PoolPg,
+    clients: ClientConnections,
     clip_runtime: Handle,
 ) -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
     warp::post()
         .and(warp::path!("clip"))
         .and(warp::path::end())
         .and(with_json_body::<ClipParameters>())
+        .and(with_clients(clients))
         .and(with_db_access_manager(pool))
-        .map(move |parameters: ClipParameters, database: Database| {
-            let uuid = Uuid::new_v4().to_string();
-            clip_runtime.spawn(clip(
-                uuid.clone(),
-                parameters.channel,
-                [parameters.start_timestamp, parameters.end_timestamp],
-                parameters.encode,
-                database,
-            ));
-            uuid
-        })
+        .map(
+            move |parameters: ClipParameters, clients: ClientConnections, database: Database| {
+                let uuid = Uuid::new_v4().to_string();
+                clip_runtime.spawn(clip(
+                    clients,
+                    uuid.clone(),
+                    parameters.channel,
+                    [parameters.start_timestamp, parameters.end_timestamp],
+                    parameters.encode,
+                    database,
+                ));
+                uuid
+            },
+        )
         .with(warp::log::custom(get_warp_logger))
 }
 
 /// GET /websocket
 pub fn websocket_route(
     pool: PoolPg,
+    clients: ClientConnections,
 ) -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
-    let clients_filter = {
-        let clients = ClientConnections::default();
-        warp::any().map(move || clients.clone())
-    };
     warp::get()
         .and(warp::path!("websocket"))
         .and(warp::path::end())
         .and(warp::ws())
         /* State */
-        .and(clients_filter)
+        .and(with_clients(clients))
         .and(with_db_access_manager(pool))
         .map(
             |ws: warp::ws::Ws, clients: ClientConnections, database: Database| {

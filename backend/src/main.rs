@@ -68,10 +68,12 @@ async fn main() -> Result<()> {
         let pool =
             database::establish_connection().expect("failed to establish database connection");
 
+        let clients = ClientConnections::default();
+
         let routes = root_route()
-            .or(websocket_route(pool.clone()))
+            .or(websocket_route(pool.clone(), clients.clone()))
             .or(list_recordings(pool.clone()))
-            .or(clip_route(pool.clone(), clip_runtime));
+            .or(clip_route(pool.clone(), clients.clone(), clip_runtime));
 
         runtime.block_on(async move {
             info!("running on port {PORT}!");

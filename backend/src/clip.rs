@@ -1,4 +1,8 @@
-use crate::database::{Database, NewRecording};
+use crate::{
+    callbacks::alert_clients_of_database_change,
+    database::{Database, NewRecording},
+    ClientConnections,
+};
 
 use std::path::PathBuf;
 
@@ -57,6 +61,7 @@ async fn download_segments(
 }
 
 pub async fn clip(
+    clients: ClientConnections,
     uuid: String,
     channel: usize,
     timeframe: [usize; 2],
@@ -101,7 +106,8 @@ pub async fn clip(
             stage = stage.error_variant().unwrap_or(stage);
             recording_row.stage = stage as i32;
             recording_row.status = e.to_string();
-            database.update_recording(&recording_row)?;
+            alert_clients_of_database_change(clients, &database.update_recording(&recording_row)?)
+                .await?;
 
             remove_dir_all(&output_directory).await?;
             Err(e)
