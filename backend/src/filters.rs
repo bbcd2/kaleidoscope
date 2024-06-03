@@ -11,6 +11,7 @@ use crate::{
     callbacks::{on_connect, on_disconnect, on_message},
     connection::handle_connection,
     database::{Database, PoolPg},
+    tree::get_warp_logger,
     ClientConnections,
 };
 
@@ -62,7 +63,7 @@ pub fn root_route() -> impl Filter<Extract = impl warp::Reply, Error = warp::Rej
         .and(warp::path::end())
         .map(|| "hey, welcome to the bbcd backend! uh, please leave /lh".to_owned())
         .with(warp::cors())
-        .with(warp::log("root"))
+        .with(warp::log::custom(get_warp_logger))
 }
 
 /// GET /list-recordings
@@ -89,7 +90,7 @@ pub fn list_recordings(
             },
         )
         .with(warp::cors())
-        .with(warp::log("list videos"))
+        .with(warp::log::custom(get_warp_logger))
 }
 
 pub fn websocket_route(

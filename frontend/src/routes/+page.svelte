@@ -32,6 +32,7 @@
         return [
             /** Flash a message to the snackbar */
             (message: string, error: boolean) => {
+                console.debug(`flashing snackbar: ${message}`);
                 const snackbar = document.querySelector("#snackbar");
                 if (!snackbar) return;
                 snackbar.className = "snackbar active " + error ? "primary" : "error";
@@ -86,7 +87,7 @@
             flashSnackbar(
                 !wsConnected
                     ? `Failed to connect to the server.`
-                    : `Connection to server unexpectedly closed!>` +
+                    : `Connection to server unexpectedly closed!` +
                           ' Check <a href="status.bbcd.uk.to">the status page</a>!',
                 true,
             );
