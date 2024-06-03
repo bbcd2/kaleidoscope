@@ -20,12 +20,12 @@ use warp::ws::{Message, WebSocket};
 
 /// Messages
 pub mod messages {
-    use crate::database::Video;
+    use crate::database::Recording;
 
     #[derive(serde::Serialize)]
     pub enum ServerMessage {
         ClientHello,
-        DatabaseUpdate(Video),
+        DatabaseUpdate(Recording),
         Error(String),
     }
 }

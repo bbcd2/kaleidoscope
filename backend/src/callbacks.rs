@@ -2,7 +2,7 @@
 
 use crate::{
     connection::messages::ServerMessage,
-    database::{Database, Video},
+    database::{Database, Recording},
     ClientConnections,
 };
 
@@ -67,7 +67,7 @@ pub fn on_message(
 
 pub async fn alert_clients_of_database_change(
     clients: ClientConnections,
-    change: &Video,
+    change: &Recording,
 ) -> Result<()> {
     let clients = clients.read().await;
     for (id, client) in clients.iter() {

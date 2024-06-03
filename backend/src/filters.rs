@@ -1,6 +1,7 @@
-use std::fmt::Debug;
+use std::{collections::HashMap, fmt::Debug};
 
 use anyhow::anyhow;
+use serde::de::DeserializeOwned;
 use warp::{
     reject::{self, Reject},
     Filter,
@@ -48,11 +49,47 @@ fn with_db_access_manager(
         })
 }
 
+#[allow(unused)] // todo
+fn with_json_body<T: DeserializeOwned + Send>(
+) -> impl Filter<Extract = (T,), Error = warp::Rejection> + Clone {
+    const MAX_SIZE: u64 = 4 * 1024 /* KiB */;
+    warp::body::content_length_limit(MAX_SIZE).and(warp::body::json())
+}
+
+/// GET /
 pub fn root_route() -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
     warp::path!()
+        .and(warp::path::end())
         .map(|| "hey, welcome to the bbcd backend! uh, please leave /lh".to_owned())
         .with(warp::cors())
         .with(warp::log("root"))
+}
+
+/// GET /list-recordings
+pub fn list_recordings(
+    pool: PoolPg,
+) -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
+    warp::path!("list-recordings")
+        .and(warp::query::<HashMap<String, String>>())
+        .and(with_db_access_manager(pool))
+        .and_then(
+            |query: HashMap<String, String>, mut database: Database| async move {
+                let (start, count) = (query.get("start"), query.get("count"));
+                let start = start.map(|start| start.parse().ok()).flatten().unwrap_or(0);
+                let count = count
+                    .map(|count| count.parse().ok())
+                    .flatten()
+                    .unwrap_or(15);
+                match database.get_recordings(start, count) {
+                    Ok(videos) => Ok(warp::reply::json(&videos)),
+                    Err(e) => Err(warp::reject::custom(ServerError::new(anyhow!(
+                        "failed to fetch videos: {e}"
+                    )))),
+                }
+            },
+        )
+        .with(warp::cors())
+        .with(warp::log("list videos"))
 }
 
 pub fn websocket_route(

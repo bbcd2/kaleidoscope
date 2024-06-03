@@ -17,7 +17,7 @@ use log::info;
 use tokio::sync::{mpsc::UnboundedSender, RwLock};
 use warp::{ws::Message, Filter as _};
 
-use crate::filters::{root_route, websocket_route};
+use filters::{list_recordings, root_route, websocket_route};
 
 pub const PORT: u16 = 8081;
 
@@ -46,7 +46,11 @@ async fn main() -> Result<()> {
 
     let pool = database::establish_connection()?;
 
-    let routes = warp::get().and(root_route().or(websocket_route(pool)));
+    let routes = warp::get().and(
+        root_route()
+            .or(list_recordings(pool.clone()))
+            .or(websocket_route(pool)),
+    );
 
     info!("running on port {PORT}!");
     warp::serve(routes).run(([0; 4], PORT)).await;
