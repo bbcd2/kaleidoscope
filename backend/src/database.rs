@@ -24,12 +24,12 @@ pub struct Database {
     pub connection: PooledPg,
 }
 impl Database {
-    pub fn create_recording(&mut self, recording: NewRecording) -> Result<Recording> {
-        let video = diesel::insert_into(crate::schema::recordings::table)
-            .values(&recording)
+    pub fn create_recording(&mut self, recording: &NewRecording) -> Result<Recording> {
+        let recording = diesel::insert_into(crate::schema::recordings::table)
+            .values(recording)
             .get_result(&mut self.connection)
-            .context("failed to insert video")?;
-        Ok(video)
+            .context("failed to insert recording")?;
+        Ok(recording)
     }
     pub fn delete_recroding(&mut self, target_id: i32) -> Result<()> {
         use crate::schema::recordings::dsl::*;
@@ -43,6 +43,13 @@ impl Database {
             .limit(count)
             .load(&mut self.connection)?;
         Ok(recordings_list)
+    }
+    pub fn update_recording(&mut self, recording: &NewRecording) -> Result<()> {
+        use crate::schema::recordings::dsl::*;
+        diesel::update(recordings.filter(uuid.eq(recording.uuid)))
+            .set(recording)
+            .execute(&mut self.connection)?;
+        Ok(())
     }
 }
 
@@ -59,7 +66,7 @@ pub struct Recording {
     pub stage: i32,
     pub channel: Channel,
 }
-#[derive(Insertable)]
+#[derive(Insertable, AsChangeset)]
 #[diesel(table_name = crate::schema::recordings)]
 #[diesel(check_for_backend(diesel::pg::Pg))]
 pub struct NewRecording<'a> {

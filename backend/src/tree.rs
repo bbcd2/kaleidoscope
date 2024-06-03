@@ -8,7 +8,7 @@ pub fn init_logger() {
 }
 
 pub fn get_warp_logger(info: Info) {
-    if info.status() == warp::http::StatusCode::NOT_FOUND {
+    if info.status() != warp::http::StatusCode::OK {
         return;
     }
     info!(

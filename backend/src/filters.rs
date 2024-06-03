@@ -122,12 +122,13 @@ pub fn clip_route(
             clip_runtime.spawn(clip(
                 uuid.clone(),
                 parameters.channel,
-                (parameters.start_timestamp, parameters.end_timestamp),
+                [parameters.start_timestamp, parameters.end_timestamp],
                 parameters.encode,
                 database,
             ));
             uuid
         })
+        .with(warp::log::custom(get_warp_logger))
 }
 
 /// GET /websocket
