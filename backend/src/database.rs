@@ -13,7 +13,6 @@ pub type PoolPg = Pool<ConnectionManager<PgConnection>>;
 pub type PooledPg = PooledConnection<ConnectionManager<PgConnection>>;
 
 pub type UserId = i32;
-pub type Channel = i32;
 
 /// Establish a pool and database connection from `DATABASE_URL`
 pub fn establish_connection() -> Result<PoolPg> {
@@ -50,7 +49,7 @@ impl Database {
     }
     pub fn update_recording(&mut self, recording: &RecordingUpdate) -> Result<Recording> {
         use crate::schema::recordings::dsl::*;
-        let recording = diesel::update(recordings.filter(uuid.eq(recording.uuid)))
+        let recording = diesel::update(recordings.filter(uuid.eq(&recording.uuid)))
             .set(recording)
             .get_result(&mut self.connection)
             .context("failed to update recording row")?;
@@ -69,19 +68,19 @@ pub struct Recording {
     pub rec_end: NaiveDateTime,
     pub status: String,
     pub stage: i32,
-    pub channel: Channel,
+    pub channel: String,
 }
 #[derive(Insertable, AsChangeset)]
 #[diesel(table_name = crate::schema::recordings)]
 #[diesel(check_for_backend(diesel::pg::Pg))]
-pub struct RecordingUpdate<'a> {
+pub struct RecordingUpdate {
     pub user_id: Option<UserId>,
-    pub uuid: &'a str,
-    pub rec_start: &'a NaiveDateTime,
-    pub rec_end: &'a NaiveDateTime,
+    pub uuid: String,
+    pub rec_start: NaiveDateTime,
+    pub rec_end: NaiveDateTime,
     pub status: String,
     pub stage: i32,
-    pub channel: Channel,
+    pub channel: String,
 }
 
 // todo: users

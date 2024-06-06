@@ -4,12 +4,14 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-anyhow = "1.0.86"
+anyhow = { version = "1.0.86", features = ["backtrace"] }
 chrono = { version = "0.4.38", features = ["serde"] }
 diesel = { version = "2.2.0", features = ["postgres", "r2d2", "chrono"] }
 dotenvy = "0.15.7"
 env_logger = "0.11.3"
+ffmpeg-cli = "0.1.0"
 futures-util = "0.3.30"
+lazy_static = "1.4.0"
 log = "0.4.21"
 reqwest = "0.12.4"
 serde = { version = "1.0.203", features = ["derive"] }

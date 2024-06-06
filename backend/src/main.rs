@@ -1,6 +1,7 @@
 //! The backend for BBCD!!!
 
 pub mod clip;
+pub mod consts;
 pub mod database;
 pub mod filters;
 pub mod schema;
@@ -21,7 +22,7 @@ use std::{
 
 use anyhow::Result;
 use dotenvy::dotenv;
-use log::info;
+use log::{debug, info};
 use tokio::{
     runtime::Runtime,
     sync::{mpsc::UnboundedSender, RwLock},
@@ -38,7 +39,7 @@ pub static NEXT_CLIENT_ID: AtomicUsize = AtomicUsize::new(1);
 async fn main() -> Result<()> {
     dotenv().ok();
     init_logger();
-    info!("hello from the bbcd backend!");
+    debug!("hello from the bbcd backend!");
 
     let (clip_shutdown_tx, clip_shutdown_rx) = tokio::sync::oneshot::channel();
     let (clip_handle_tx, clip_handle_rx) = std::sync::mpsc::channel();
