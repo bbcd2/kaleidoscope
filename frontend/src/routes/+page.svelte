@@ -168,6 +168,9 @@
 {#if recordings.error}
     <p>Failed to fetch recordings: {recordings.error}</p>
 {/if}
+{#if recordings.recordings?.length === 0}
+    <p class="italic text-center">No recordings yet!</p>
+{/if}
 <div class="flex justify-center">
     <table
         class="lg:2-xl:mx-[22rem] md:mx-[8rem] mx-2 my-2 border-black dark:border-white w-full table-auto"
