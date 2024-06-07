@@ -7,6 +7,12 @@ pub struct SourceEntry<'a> {
     pub url_prefix: &'a str,
 }
 
+macro_rules! environment {
+    ($key: expr) => {
+        std::env::var($key).expect(&format!("not set environment variable: {}", $key))
+    };
+}
+
 lazy_static! {
     pub static ref SOURCES: HashMap<&'static str, SourceEntry<'static>> = {
         [
@@ -42,4 +48,8 @@ lazy_static! {
             ("S4C", SourceEntry { id: 29, url_prefix: "https://vs-cmaf-pushb-uk-live.akamaized.net/x=4/i=urn:bbc:pips:service:s4cpbs/"}),
         ].into_iter().collect()
     };
+    pub static ref DATABASE_URL: String = environment!("DATABASE_URL");
+    pub static ref WEBDAV_URL: String = environment!("WEBDAV_URL");
+    pub static ref WEBDAV_PASSWORD: String = environment!("WEBDAV_PASSWORD");
+    pub static ref WEBDAV_USERNAME: String = environment!("WEBDAV_USERNAME");
 }

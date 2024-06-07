@@ -14,32 +14,25 @@ use crate::{
     tree::init_logger,
 };
 
-use std::{
-    collections::HashMap,
-    sync::{atomic::AtomicUsize, Arc},
-    thread,
-};
+use std::thread;
 
 use anyhow::Result;
+use clip::FfmpegProgressChannels;
 use dotenvy::dotenv;
-use log::{debug, info};
-use tokio::{
-    runtime::Runtime,
-    sync::{mpsc::UnboundedSender, RwLock},
-};
-use warp::{ws::Message, Filter as _};
+use filters::ffmpeg_progress;
+use log::{debug, info, trace};
+use tokio::runtime::Runtime;
+use warp::Filter as _;
+use websocket_connection::ClientConnections;
 
 pub const PORT: u16 = 8081;
-
-pub type ClientConnections = Arc<RwLock<HashMap<usize, UnboundedSender<Message>>>>;
-
-pub static NEXT_CLIENT_ID: AtomicUsize = AtomicUsize::new(1);
 
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenv().ok();
     init_logger();
     debug!("hello from the bbcd backend!");
+    trace!("trace enabled!");
 
     let (clip_shutdown_tx, clip_shutdown_rx) = tokio::sync::oneshot::channel();
     let (clip_handle_tx, clip_handle_rx) = std::sync::mpsc::channel();
@@ -69,11 +62,18 @@ async fn main() -> Result<()> {
             database::establish_connection().expect("failed to establish database connection");
 
         let clients = ClientConnections::default();
+        let ffmpeg_progress_channels = FfmpegProgressChannels::default();
 
         let routes = root_route()
             .or(websocket_route(pool.clone(), clients.clone()))
             .or(list_recordings(pool.clone()))
-            .or(clip_route(pool.clone(), clients.clone(), clip_runtime));
+            .or(clip_route(
+                pool.clone(),
+                clip_runtime,
+                clients.clone(),
+                ffmpeg_progress_channels.clone(),
+            ))
+            .or(ffmpeg_progress(ffmpeg_progress_channels.clone()));
 
         runtime.block_on(async move {
             info!("running on port {PORT}!");

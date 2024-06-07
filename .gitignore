@@ -12,3 +12,5 @@ frontend/deploy.tar.xz
 
 backend/target
 backend/Cargo.lock
+backend/.env
+backend/temp

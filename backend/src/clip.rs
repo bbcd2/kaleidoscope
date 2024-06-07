@@ -1,32 +1,37 @@
 use crate::{
-    consts::{SourceEntry, SOURCES},
-    database::{Database, Recording, RecordingUpdate},
+    consts::{SourceEntry, SOURCES, WEBDAV_PASSWORD, WEBDAV_URL, WEBDAV_USERNAME},
+    database::{Database, RecordingUpdate, Uuid},
     websocket_callbacks::alert_clients_of_database_change,
-    ClientConnections,
+    ClientConnections, PORT,
 };
 
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
     process::Stdio,
     sync::{atomic::AtomicUsize, Arc},
-    time::Duration,
 };
 
 use anyhow::{anyhow, Context, Result};
-use chrono::DateTime;
+use chrono::{DateTime, TimeDelta};
 use ffmpeg_cli::{FfmpegBuilder, Parameter};
-use futures_util::{
-    future::{join_all, try_join_all},
-    join, stream, StreamExt, TryStreamExt as _,
-};
+use futures_util::{join, stream, StreamExt, TryStreamExt as _};
 use log::{debug, error, info, trace};
 use serde::Deserialize;
 use tokio::{
     fs::{create_dir_all, remove_dir_all, remove_file, File},
     io::AsyncWriteExt as _,
-    sync::Mutex,
-    time::Instant,
+    process::Command,
+    sync::{
+        mpsc::{unbounded_channel, UnboundedSender},
+        Mutex, RwLock,
+    },
+    time::{sleep, Instant},
 };
+use warp::reply::Reply;
+
+/// `None` signifies the end of an FFmpeg job
+pub type FfmpegProgressChannels = Arc<RwLock<HashMap<Uuid, UnboundedSender<Option<TimeDelta>>>>>;
 
 const VIDEO_DOWNLOAD_JOB_COUNT: usize = 10;
 const TEMP_DIRECTORY: &str = "temp";
@@ -62,7 +67,7 @@ pub struct ClipParameters {
 
 /// Clip progress stage
 #[derive(Clone, Copy, Debug)]
-#[repr(usize)]
+#[repr(i32)]
 pub enum Stage {
     // OK statuses
     Initializing = 1,
@@ -98,6 +103,42 @@ fn calculate_segment_idx(timestamp: usize) -> usize {
     // <SegmentTemplate ... timescale="50" duration="192" />
     const MAGIC_OFFSET: usize = 38; // 145.92 seconds
     (((timestamp as f64) / (192. / 50.)).floor() as usize) + MAGIC_OFFSET
+}
+
+pub async fn ffmpeg_progress_update_handler(
+    mut body: impl warp::Stream<Item = Result<impl warp::Buf, warp::Error>> + Unpin + Send + Sync,
+    uuid: Uuid,
+    ffmpeg_progress_channels: FfmpegProgressChannels,
+) -> Result<impl Reply> {
+    let find_out_time = |line: &str| {
+        line.split_once("out_time_us=")
+            .and_then(|(_, time)| Some(TimeDelta::milliseconds(time.parse::<i64>().ok()? / 1000)))
+    };
+
+    let lookup = ffmpeg_progress_channels.read().await;
+    let tx = lookup
+        .get(&uuid)
+        .ok_or(anyhow!("ffmpeg response uuid {uuid} not found"))?;
+
+    while let Some(buf) = body.next().await {
+        let mut buf = buf.context("failed to get buffer")?;
+        while buf.remaining() > 0 {
+            let chunk = buf.chunk();
+            let chunk_len = chunk.len();
+            let lines = std::str::from_utf8(chunk).unwrap_or_default().lines();
+            for line in lines {
+                if let Some(out_time) = find_out_time(line) {
+                    trace!("ffmpeg progress out time: {out_time}");
+                    tx.send(Some(out_time))?;
+                }
+            }
+            buf.advance(chunk_len);
+        }
+    }
+
+    tx.send(None)?;
+
+    Ok(warp::reply())
 }
 
 /// Download a url to a path.
@@ -169,7 +210,7 @@ async fn download_segments(
         .update("Starting download".to_string(), Stage::Downloading)
         .await?;
 
-    let &SourceEntry { url_prefix, id } = SOURCES.get(channel).context("failed to find channel")?;
+    let &SourceEntry { url_prefix, .. } = SOURCES.get(channel).context("failed to find channel")?;
     download_init_segments(channel, url_prefix)
         .await
         .context("failed to download initial segments")?;
@@ -194,7 +235,7 @@ async fn download_segments(
                 let audio_url =
                     format!("{url_prefix}t=3840/a=pa3/al=en-GB/ap=main/b=96000/{segment_idx}.m4s");
 
-                let base_path = PathBuf::new().join(TEMP_DIRECTORY).join(uuid);
+                let base_path = PathBuf::from(target_directory);
                 let video_path = base_path.join(format!("video_{segment_idx}.m4s"));
                 let audio_path = base_path.join(format!("audio_{segment_idx}.m4s"));
 
@@ -233,6 +274,7 @@ async fn combine_segments(
     uuid: &str,
     channel: &str,
     encode: bool,
+    ffmpeg_progress_channels: FfmpegProgressChannels,
 ) -> Result<()> {
     status_reporter
         .update(format!("Starting segment combination"), Stage::Combining)
@@ -247,6 +289,13 @@ async fn combine_segments(
             .option(Parameter::Single("nostdin"))
             .option(Parameter::Single("y")) // overwrite output files
     };
+
+    // Create progress channel
+    let (tx, mut progress_rx) = unbounded_channel();
+    {
+        let mut lookup = ffmpeg_progress_channels.write().await;
+        lookup.insert(uuid.to_string(), tx);
+    }
 
     let job_path = PathBuf::new().join(TEMP_DIRECTORY).join(uuid);
     let init_path = PathBuf::new()
@@ -269,28 +318,52 @@ async fn combine_segments(
         }
         res
     });
-    debug!("video concat:\n{video_concat_input}\naudio concat:\n{audio_concat_input}");
 
-    // FFmpeg concatenation commands
+    // Video and audio concatenation
     let [video_concat, audio_concat] = [
         (&video_concat_input, video_concat_path.to_str().unwrap()),
         (&audio_concat_input, audio_concat_path.to_str().unwrap()),
     ]
-    .map(|(input, output)| async move {
-        debug!("creating ffmpeg builder for {input} -> {output}");
-        let builder = get_default_builder()
+    .map(|(input, output)| {
+        get_default_builder()
             .input(ffmpeg_cli::File::new(input))
-            .output(ffmpeg_cli::File::new(output).option(Parameter::KeyValue("c", "copy")));
-        builder.run().await.map_err(|e| anyhow!("{e}"))
+            .output(ffmpeg_cli::File::new(output).option(Parameter::KeyValue("c", "copy")))
     });
 
-    let length = Duration::from_secs(100);
+    let video_concat_job = Command::from(
+        video_concat
+            .option(Parameter::KeyValue(
+                "progress",
+                &format!("http://127.0.0.1:{PORT}/ffmpeg-progress/{uuid}"),
+            ))
+            .to_command(),
+    )
+    .spawn()
+    .context("spawning video concat command")?;
+    let audio_concat_job = Command::from(audio_concat.to_command())
+        .spawn()
+        .context("spawning audio concat command")?;
 
-    video_concat.await?.process.wait_with_output()?;
-    audio_concat.await?.process.wait_with_output()?;
+    status_reporter
+        .update(
+            format!("Concatenating audio and video segments"),
+            Stage::Combining,
+        )
+        .await?;
+
+    video_concat_job.wait_with_output().await?;
+    audio_concat_job.wait_with_output().await?;
+    let mut time = None;
+    while let Some(Some(progress)) = progress_rx.recv().await {
+        time = Some(progress);
+    }
+    let time = time.unwrap_or_default();
 
     // Combine concatenated audio and video
-    let combine = get_default_builder()
+    status_reporter
+        .update(format!("Combining and encoding segments"), Stage::Encoding)
+        .await?;
+    let mut combine_job = get_default_builder()
         .input(ffmpeg_cli::File::new(audio_concat_path.to_str().unwrap()))
         .input(ffmpeg_cli::File::new(video_concat_path.to_str().unwrap()))
         .output(
@@ -300,37 +373,77 @@ async fn combine_segments(
                     "c:v",
                     if encode { "libx264" } else { "copy" },
                 )),
-        );
-    let mut combine_job = combine
-        .run()
-        .await
-        .map_err(|e| anyhow!("failed to combine: {e}"))?;
-    debug!("running combine job");
-
-    // Report progress
-    while let Some(progress) = combine_job.progress.next().await {
-        if let Ok(progress) = progress {
-            let percentage = ((progress.out_time.unwrap().as_secs() as f32)
-                / (length.as_secs() as f32)
-                * 100.) as usize;
-            status_reporter
-                .update(format!("Combining: {percentage}%"), Stage::Combining)
-                .await?;
+        )
+        .option(Parameter::KeyValue(
+            "progress",
+            &format!("http://127.0.0.1:{PORT}/ffmpeg-progress/{uuid}"),
+        ))
+        .to_command()
+        .spawn()
+        .context("spawning combine job")?;
+    sleep(TimeDelta::seconds(1).to_std()?).await;
+    if let Some(status) = combine_job.try_wait()? {
+        if !status.success() {
+            Err(anyhow!("combine job failed! {:?}", combine_job.stderr))?;
         }
     }
+    while let Some(maybe_progress) = progress_rx.recv().await {
+        let progress = match maybe_progress {
+            Some(progress) => progress,
+            None => break,
+        };
+        let percentage = (progress.num_seconds() as f32 / time.num_seconds() as f32) * 100.;
+        status_reporter
+            .update(
+                format!("Combining and encoding segments ({percentage:.2}%)"),
+                Stage::Encoding,
+            )
+            .await?;
+    }
 
-    combine_job.process.wait_with_output()?;
+    Ok(())
+}
+
+async fn upload(status_reporter: &mut StatusReporter, uuid: &str) -> Result<()> {
+    status_reporter
+        .update("Uploading result".to_string(), Stage::Uploading)
+        .await?;
+
+    let output_path = PathBuf::new()
+        .join(TEMP_DIRECTORY)
+        .join(uuid)
+        .join("output.mp4");
+
+    Command::new("curl")
+        .args([
+            "-T",
+            output_path.to_str().unwrap(),
+            "-u",
+            &format!(
+                "{WEBDAV_USERNAME}:{WEBDAV_PASSWORD}",
+                WEBDAV_USERNAME = WEBDAV_USERNAME.to_string(),
+                WEBDAV_PASSWORD = WEBDAV_PASSWORD.to_string()
+            ),
+            &format!(
+                "{WEBDAV_URL}/bbcd/{uuid}.mp4",
+                WEBDAV_URL = WEBDAV_URL.to_string()
+            ),
+        ])
+        .spawn()?
+        .wait_with_output()
+        .await?;
 
     Ok(())
 }
 
 pub async fn clip(
-    clients: ClientConnections,
     uuid: String,
     channel: String,
     timeframe: [usize; 2],
     encode: bool,
     database: Database,
+    clients: ClientConnections,
+    ffmpeg_progress_channels: FfmpegProgressChannels,
 ) -> Result<()> {
     info!("{uuid}: starting clip");
 
@@ -378,8 +491,10 @@ pub async fn clip(
             &uuid,
             &channel,
             encode,
+            ffmpeg_progress_channels,
         )
         .await?;
+        upload(&mut status_reporter, &uuid).await?;
 
         Ok::<_, anyhow::Error>(())
     }
@@ -392,6 +507,15 @@ pub async fn clip(
         }
         Err(e) => e,
     };
+
+    status_reporter
+        .update(
+            format!("{e:?}"),
+            Stage::error_variant(unsafe {
+                std::mem::transmute(status_reporter.recording_row.stage)
+            }),
+        )
+        .await?;
 
     error!("{uuid}: failed: {e:?}");
     error!("{uuid}: cleaning up");

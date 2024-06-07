@@ -1,5 +1,6 @@
 use crate::filters::ServerError;
 
+use crate::consts::DATABASE_URL;
 use anyhow::{anyhow, Context as _, Result};
 use chrono::NaiveDateTime;
 use diesel::{
@@ -12,13 +13,12 @@ use warp::{reject, Filter};
 pub type PoolPg = Pool<ConnectionManager<PgConnection>>;
 pub type PooledPg = PooledConnection<ConnectionManager<PgConnection>>;
 
+pub type Uuid = String;
 pub type UserId = i32;
 
 /// Establish a pool and database connection from `DATABASE_URL`
 pub fn establish_connection() -> Result<PoolPg> {
-    let database_url =
-        std::env::var("DATABASE_URL").expect("not set environment variable: DATABASE_URL");
-    let manager = ConnectionManager::<PgConnection>::new(database_url);
+    let manager = ConnectionManager::<PgConnection>::new(DATABASE_URL.to_string());
     let pool = PoolPg::new(manager).context("failed to create pool")?;
     Ok(pool)
 }
@@ -75,7 +75,7 @@ pub struct Recording {
 #[diesel(check_for_backend(diesel::pg::Pg))]
 pub struct RecordingUpdate {
     pub user_id: Option<UserId>,
-    pub uuid: String,
+    pub uuid: Uuid,
     pub rec_start: NaiveDateTime,
     pub rec_end: NaiveDateTime,
     pub status: String,
