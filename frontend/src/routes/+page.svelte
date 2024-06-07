@@ -23,47 +23,32 @@
 
     import { DurationUnit, SOURCES, getMaxDay, lookupSourceById, Stage } from "$lib";
 
-    const [flashSnackbar, stopFlashSnackbar] = (function () {
-        let snackbar = null;
-        try {
-            snackbar = document.querySelector("#snackbar");
-        } catch (e) {}
-        return [
-            /** Flash a message to the snackbar */
-            (message: string, error: boolean) => {
-                console.debug(`flashing snackbar: ${message}`);
-                const snackbar = document.querySelector("#snackbar");
-                if (!snackbar) return;
-                snackbar.className = "snackbar active " + error ? "primary" : "error";
-                snackbar.innerHTML = message;
-                setTimeout(stopFlashSnackbar, 3_000);
-            },
-            /** Stop flashing a message to the snackbar */
-            () => {
-                if (snackbar) snackbar.className = "";
-            },
-        ];
-    })();
+    let statusFlash: { message: string; error: boolean } | null = null;
+    let statusFlashTimeout: NodeJS.Timeout | null = null;
+    $: {
+        if (statusFlashTimeout) clearTimeout(statusFlashTimeout);
+        statusFlashTimeout = setTimeout(() => (statusFlash = null), 3_000);
+    }
 
     let ws: null | WebSocket = null;
     let wsConnected: boolean = false;
     const connectWs = () => {
         // Connect to backend websocket
-        flashSnackbar("Connecting to the server", false);
+        statusFlash = { message: "Connecting to the server", error: false };
         ws = new WebSocket("ws://localhost:8081/websocket" /* fixme */);
         ws.onopen = () => {
             wsConnected = true;
-            stopFlashSnackbar();
+            statusFlash = { message: "Connected!", error: false };
         };
         ws.onmessage = handleWsMessage;
         ws.onclose = ws.onerror = () =>
-            flashSnackbar(
-                !wsConnected
+            (statusFlash = {
+                message: !wsConnected
                     ? `Failed to connect to the server.`
                     : `Connection to server unexpectedly closed!` +
-                          ' Check <a href="status.bbcd.uk.to">the status page</a>!',
-                true,
-            );
+                      ' Check <a href="status.bbcd.uk.to">the status page</a>!',
+                error: true,
+            });
     };
     const handleWsMessage = ({ data }: { data: string }) => {
         console.debug(`websocket message: ${data}`);
@@ -71,7 +56,10 @@
         try {
             response = JSON.parse(data);
         } catch (e) {
-            return flashSnackbar(`Failed to parse server response: ${data}`, true);
+            return (statusFlash = {
+                message: `Failed to parse server response: ${data}`,
+                error: true,
+            });
         }
         if (response.DatabaseUpdate) handleWsDatabaseUpdate(response.DatabaseUpdate);
     };
@@ -100,6 +88,19 @@
             };
     };
 
+    let submitError: string | undefined;
+    const submitForm = async () => {
+        const response = await axios.post("http://localhost:8081/clip" /* fixme */, {
+            start_timestamp: startTimestamp,
+            end_timestamp: endTimestamp,
+            channel,
+            encode,
+        });
+        if (response.status !== 200) {
+            submitError = response.data;
+        }
+    };
+
     // Form and database
     interface RecordingInfo {
         uuid: string;
@@ -108,7 +109,7 @@
         rec_end: string; // ISO 8601
         status: string;
         stage: number;
-        channel: number;
+        channel: string;
     }
     interface RecordingsInfo {
         obtained: boolean;
@@ -161,6 +162,168 @@
     }
     let channel = Object.values(SOURCES)[0][0];
 </script>
+
+<aside
+    class="border-2 p-4 lg:2-xl:mx-[22rem] md:mx-[8rem] mx-2 my-10 border-black dark:border-white lg:grid md:grid lg:grid-cols-3 md:grid-cols-3"
+>
+    <div class="flex flex-col items-start justify-start">
+        <!-- Left aligned -->
+        <h1 class="pb-2 text-3xl font-bold">From</h1>
+        <div class="flex flex-row">
+            <div class="w-20">
+                <Label for="first_name" class="mb-2 semibold">Day</Label>
+                <Input
+                    size="md"
+                    min="1"
+                    max={maxDay}
+                    type="number"
+                    bind:value={day}
+                    class="bg-white border-black rounded-r-none dark:bg-black dark:border-white"
+                />
+            </div>
+            <div class="w-20">
+                <Label for="first_name" class="mb-2 semibold">Month</Label>
+                <Input
+                    size="md"
+                    min="1"
+                    max="12"
+                    type="number"
+                    bind:value={month}
+                    class="bg-white border-black rounded-l-none dark:bg-black dark:border-white"
+                />
+            </div>
+        </div>
+
+        <div class="flex items-center mt-2">
+            <div class="w-20">
+                <Label class="mb-2 semibold">Hour</Label>
+                <Input
+                    size="md"
+                    min="0"
+                    max="23"
+                    type="number"
+                    bind:value={startHour}
+                    class="bg-white border-black rounded-r-none dark:bg-black dark:border-white"
+                />
+            </div>
+            <div class="w-20">
+                <Label class="mb-2 semibold">Minute</Label>
+                <Input
+                    size="md"
+                    min="0"
+                    max="59"
+                    type="number"
+                    bind:value={startMinute}
+                    class="bg-white border-black rounded-l-none rounded-r-none dark:bg-black dark:border-white"
+                />
+            </div>
+            <div class="w-20">
+                <Label class="mb-2 semibold">Seconds</Label>
+                <Input
+                    size="md"
+                    min="0"
+                    max="59"
+                    type="number"
+                    bind:value={startSecond}
+                    class="bg-white border-black rounded-l-none dark:bg-black dark:border-white"
+                />
+            </div>
+        </div>
+        <Select
+            size="md"
+            class="w-full mt-2 bg-white border-black dark:bg-black dark:border-white"
+            bind:value={channel}
+            placeholder="Select channel..."
+        >
+            {#each Object.entries(SOURCES) as [channelGroup, channels]}
+                <optgroup label={channelGroup}>
+                    {#each channels as channelOption}
+                        <option value={channelOption}>{channelOption}</option>
+                    {/each}
+                </optgroup>
+            {/each}
+        </Select>
+    </div>
+    <div class="flex flex-col items-center justify-center py-2">
+        <ArrowRightOutline />
+    </div>
+
+    <div class="flex flex-col gap-4">
+        <div class="flex flex-col">
+            <h1 class="self-start pb-2 text-3xl font-bold">Length</h1>
+            <div class="flex flex-row">
+                <div class="w-20 mt-2">
+                    <Input
+                        size="md"
+                        type="number"
+                        bind:value={duration}
+                        min="0"
+                        class="bg-white border-black rounded-r-none dark:bg-black dark:border-white"
+                    />
+                </div>
+                <div class="mt-2 w-100">
+                    <Select
+                        size="md"
+                        class="w-full font-semibold bg-white border-black rounded-l-none dark:bg-black dark:border-white"
+                        items={[
+                            { value: 0, name: "Seconds" },
+                            { value: 1, name: "Minutes" },
+                            { value: 2, name: "Hours" },
+                        ]}
+                        bind:value={durationUnit}
+                    />
+                </div>
+            </div>
+            <h6 class="self-start pt-4 font-semibold text-md">
+                Ends at {new Date(endTimestamp * 1000).toLocaleString("en-GB", {
+                    timeZone: "Europe/London",
+                    minute: "numeric",
+                    hour: "numeric",
+                    second: "numeric",
+                    hour12: false,
+                })} (UK time)
+            </h6>
+        </div>
+        <div class="flex flex-col">
+            <h1 class="self-start pb-2 text-3xl font-bold">Options</h1>
+            <div class="flex flex-row items-center gap-1">
+                <Checkbox
+                    type="checkbox"
+                    name="encode"
+                    id="encode"
+                    checked={encode}
+                    on:click={(e) => (encode = !encode)}
+                />
+                <label
+                    for="encode"
+                    class="underline select-none"
+                    title="Encoding a clip improves playback compatibility and reduces overall filesize, but takes longer to process."
+                    >Encode</label
+                >
+            </div>
+        </div>
+    </div>
+</aside>
+<div class="absolute flex flex-col justify-center items-center w-full -translate-y-[3.8rem]">
+    <Button
+        class="font-extrabold bg-black dark:bg-white dark:text-black"
+        buttonClass="font-extrabold"
+        on:click={submitForm}>Record</Button
+    >
+    <p class="pb-4">Status:</p>
+</div>
+
+{#if statusFlash}
+    <div class="flex justify-center">
+        <Toast
+            dismissable={true}
+            contentClass="flex space-x-4 rtl:space-x-reverse divide-x rtl:divide-x-reverse divide-gray-200 dark:divide-gray-700"
+        >
+            <PaperPlaneOutline class="w-5 h-5 rotate-45 text-primary-600 dark:text-primary-500" />
+            <div class="text-sm font-normal ps-4">{@html statusFlash.message}</div>
+        </Toast>
+    </div>
+{/if}
 
 {#await fetchRecordings()}
     <p class="italic text-center">Fetching recordings...</p>
@@ -225,7 +388,7 @@
                         })()}
                     </td>
                     <td class="p-2 border-2 border-black dark:border-white">
-                        {lookupSourceById(recording.channel)}
+                        {recording.channel}
                     </td>
                     <td class="p-2 border-2 border-black dark:border-white">
                         {Stage[recording.stage]}

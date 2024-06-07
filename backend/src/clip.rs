@@ -429,6 +429,8 @@ async fn upload(status_reporter: &mut StatusReporter, uuid: &str) -> Result<()> 
                 WEBDAV_URL = WEBDAV_URL.to_string()
             ),
         ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .spawn()?
         .wait_with_output()
         .await?;
@@ -502,6 +504,9 @@ pub async fn clip(
 
     let e = match result {
         Ok(_) => {
+            status_reporter
+                .update("Done".to_string(), Stage::Complete)
+                .await?;
             info!("{uuid}: done");
             return Ok(());
         }
