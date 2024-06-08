@@ -1,12 +1,12 @@
 use crate::{
     consts::{SourceEntry, SOURCES, WEBDAV_PASSWORD, WEBDAV_URL, WEBDAV_USERNAME},
-    database::{Database, RecordingUpdate, Uuid},
+    database::{Database, Recording, RecordingUpdate, Uuid},
     websocket_callbacks::alert_clients_of_database_change,
     ClientConnections, PORT,
 };
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     path::{Path, PathBuf},
     process::Stdio,
     sync::{atomic::AtomicUsize, Arc},
@@ -16,6 +16,7 @@ use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, TimeDelta};
 use ffmpeg_cli::{FfmpegBuilder, Parameter};
 use futures_util::{join, stream, StreamExt, TryStreamExt as _};
+use lazy_static::lazy_static;
 use log::{debug, error, info, trace};
 use serde::Deserialize;
 use tokio::{
@@ -32,10 +33,20 @@ use warp::reply::Reply;
 
 /// `None` signifies the end of an FFmpeg job
 pub type FfmpegProgressChannels = Arc<RwLock<HashMap<Uuid, UnboundedSender<Option<TimeDelta>>>>>;
+enum JobQueueReport {
+    Ready,
+    InQueue(usize),
+}
+type JobQueueChannel = RwLock<VecDeque<(Uuid, UnboundedSender<JobQueueReport>)>>;
 
 const VIDEO_DOWNLOAD_JOB_COUNT: usize = 10;
 const TEMP_DIRECTORY: &str = "temp";
 const INIT_DIRECTORY: &str = "init";
+
+lazy_static! {
+    static ref JOB_QUEUE_CHANNEL: JobQueueChannel = RwLock::new(VecDeque::new());
+}
+const MAX_JOB_COUNT: usize = 1;
 
 struct StatusReporter {
     pub clients: ClientConnections,
@@ -51,8 +62,11 @@ impl StatusReporter {
         self.recording_row.stage = stage as i32;
         self.recording_row.status = status;
         let recording = self.database.update_recording(&self.recording_row)?;
-        alert_clients_of_database_change(self.clients.clone(), &recording).await?;
+        self.alert(&recording).await?;
         Ok(())
+    }
+    pub async fn alert(&mut self, recording: &Recording) -> Result<()> {
+        alert_clients_of_database_change(self.clients.clone(), recording).await
     }
 }
 
@@ -69,6 +83,7 @@ pub struct ClipParameters {
 #[derive(Clone, Copy, Debug)]
 #[repr(i32)]
 pub enum Stage {
+    WaitingQueue = 0,
     // OK statuses
     Initializing = 1,
     Downloading = 2,
@@ -141,6 +156,53 @@ pub async fn ffmpeg_progress_update_handler(
     Ok(warp::reply())
 }
 
+async fn wait_in_queue(status_reporter: &mut StatusReporter, uuid: Uuid) -> Result<()> {
+    let (tx, mut rx) = unbounded_channel();
+    let len = {
+        let mut queue_channels = JOB_QUEUE_CHANNEL.write().await;
+        queue_channels.push_back((uuid.clone(), tx));
+        queue_channels.len()
+    };
+    if len > MAX_JOB_COUNT {
+        loop {
+            if let Some(JobQueueReport::InQueue(queue_pos)) = rx.recv().await {
+                info!("{uuid}: waiting in queue pos {queue_pos}");
+                status_reporter
+                    .update(format!("Queue position: {queue_pos}"), Stage::WaitingQueue)
+                    .await?;
+                continue;
+            }
+            break;
+        }
+    }
+    info!("{uuid}: queue ready!"); // debugify
+    Ok(())
+}
+async fn advance_queue(pop_uuid: Uuid) -> Result<()> {
+    info!("{pop_uuid}: advancing queue"); // debugify
+
+    let mut queue_channels = JOB_QUEUE_CHANNEL.write().await;
+    let pop_idx = queue_channels
+        .iter()
+        .enumerate()
+        .find_map(|(idx, (uuid, _))| if uuid == &pop_uuid { Some(idx) } else { None })
+        .context(anyhow!("failed to pop uuid {pop_uuid}"))?;
+    queue_channels.remove(pop_idx);
+
+    // We just mutated the queue to remove ourself, so the index is subtracted by 1
+    for idx in (MAX_JOB_COUNT - 1)..queue_channels.len() {
+        info!("{pop_uuid}: alerting queue pos {idx}"); // debugify
+        let (_, update) = &queue_channels[idx];
+        update.send(if idx == (MAX_JOB_COUNT - 1) {
+            JobQueueReport::Ready
+        } else {
+            JobQueueReport::InQueue(idx)
+        })?;
+    }
+
+    Ok(())
+}
+
 /// Download a url to a path.
 /// If the file already exists, the url will not be downloaded.
 /// If the download fails, the path will be deleted.
@@ -200,11 +262,11 @@ async fn download_init_segments(channel: &str, url_prefix: &str) -> Result<()> {
 
 /// Download segments to the resultant directory
 async fn download_segments(
+    status_reporter: &mut StatusReporter,
     uuid: &str,
     channel: &str,
     segment_idx_bounds: [usize; 2],
     target_directory: &Path,
-    status_reporter: &mut StatusReporter,
 ) -> Result<()> {
     status_reporter
         .update("Starting download".to_string(), Stage::Downloading)
@@ -461,30 +523,30 @@ pub async fn clip(
             user_id: None,
             rec_start: timestamp_bounds.next().unwrap()?,
             rec_end: timestamp_bounds.next().unwrap()?,
-            stage: Stage::Initializing as i32,
+            stage: 0,
             status: "Pending".to_string(),
             uuid: uuid.clone(),
             channel: channel.clone(),
         },
         database,
     };
-
-    status_reporter
+    let recording = status_reporter
         .database
         .create_recording(&status_reporter.recording_row)?;
+    status_reporter.alert(&recording).await?;
 
     let output_directory = PathBuf::from(TEMP_DIRECTORY).join(&uuid);
+    let segment_idx_bounds = timeframe.map(|bound| calculate_segment_idx(bound));
 
     let result = async {
-        let segment_idx_bounds = timeframe.map(|bound| calculate_segment_idx(bound));
-
+        wait_in_queue(&mut status_reporter, uuid.to_string()).await?;
         create_dir_all(&output_directory).await?;
         download_segments(
+            &mut status_reporter,
             &uuid,
             &channel,
             segment_idx_bounds,
             &output_directory,
-            &mut status_reporter,
         )
         .await?;
         combine_segments(
@@ -501,6 +563,8 @@ pub async fn clip(
         Ok::<_, anyhow::Error>(())
     }
     .await;
+
+    advance_queue(uuid.clone()).await?;
 
     let e = match result {
         Ok(_) => {

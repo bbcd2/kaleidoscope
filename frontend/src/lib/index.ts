@@ -11,6 +11,7 @@ export enum DurationUnit {
 
 /** Recording status from the server */
 export enum Stage {
+    "Waiting in Queue" = 0,
     // OK statuses -- fixme: complete bs: needed to deploy
     "Initialising" = 1,
     "Downloading" = 2,

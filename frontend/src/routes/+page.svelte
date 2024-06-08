@@ -27,7 +27,7 @@
     let statusFlashTimeout: NodeJS.Timeout | null = null;
     $: {
         if (statusFlashTimeout) clearTimeout(statusFlashTimeout);
-        statusFlashTimeout = setTimeout(() => (statusFlash = null), 3_000);
+        if (!statusFlash?.error) statusFlashTimeout = setTimeout(() => (statusFlash = null), 3_000);
     }
 
     let ws: null | WebSocket = null;
@@ -408,8 +408,7 @@
                             <p>Recorded by: <strong>bbcduser</strong></p>
                             <!-- TODO: Have the username change, but thats not entirely needed right now -->
                             <p>
-                                Recorded from: <strong>{lookupSourceById(recording.channel)}</strong
-                                >
+                                Recorded from: <strong>{recording.channel}</strong>
                             </p>
                             <p>
                                 Recording date/time: <strong

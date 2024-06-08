@@ -44,6 +44,7 @@ impl Database {
         let recordings_list = recordings
             .offset(start)
             .limit(count)
+            .order_by(id.asc())
             .load(&mut self.connection)?;
         Ok(recordings_list)
     }
