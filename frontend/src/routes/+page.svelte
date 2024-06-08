@@ -32,23 +32,27 @@
 
     let ws: null | WebSocket = null;
     let wsConnected: boolean = false;
-    const connectWs = () => {
+    const connectWs = (retry: boolean = false) => {
         // Connect to backend websocket
-        statusFlash = { message: "Connecting to the server", error: false };
+        if (!retry) statusFlash = { message: "Connecting to the server", error: false };
         ws = new WebSocket("ws://localhost:8081/websocket" /* fixme */);
         ws.onopen = () => {
             wsConnected = true;
             statusFlash = { message: "Connected!", error: false };
+            if (retry) fetchRecordings().then();
         };
         ws.onmessage = handleWsMessage;
-        ws.onclose = ws.onerror = () =>
-            (statusFlash = {
-                message: !wsConnected
-                    ? `Failed to connect to the server.`
-                    : `Connection to server unexpectedly closed!` +
-                      ' Check <a href="status.bbcd.uk.to">the status page</a>!',
+        ws.onclose = ws.onerror = () => {
+            statusFlash = {
+                message:
+                    (!retry && !wsConnected
+                        ? `Failed to connect to the server.`
+                        : `Connection to server unexpectedly closed!`) +
+                    ' Check <a href="status.bbcd.uk.to">the status page</a>!',
                 error: true,
-            });
+            };
+            setTimeout(() => connectWs(true), 1_000);
+        };
     };
     const handleWsMessage = ({ data }: { data: string }) => {
         console.debug(`websocket message: ${data}`);
@@ -65,6 +69,7 @@
     };
     const handleWsDatabaseUpdate = (recording: RecordingInfo) => {
         const updateIdx = recordings.recordings!.findIndex((rec) => rec.uuid === recording.uuid);
+        // Assume that a recording update occurs within pagination
         if (updateIdx === -1) recordings.recordings!.splice(0, 0, recording);
         else recordings.recordings![updateIdx] = recording;
         recordings = recordings;
@@ -72,19 +77,30 @@
 
     onMount(() => {
         connectWs();
+        fetchRecordings().then();
     });
 
     const fetchRecordings = async () => {
-        const response = await axios.get(
-            `http://localhost:8081/list-recordings?start=0&count=15` /* fixme */,
-        );
-        if (response.status !== 200)
-            recordings = { obtained: false, error: `${response.data}`, recordings: undefined };
-        else
+        let response = undefined;
+        try {
+            response = await axios.get(
+                `http://localhost:8081/list-recordings?start=0&count=15` /* fixme */,
+            );
+        } catch (e) {
+            response = undefined;
+        }
+        if (response === undefined || response.status !== 200) {
+            recordings = {
+                obtained: false,
+                error: response ? `${response.data}` : "",
+                recordings: undefined,
+            };
+            setTimeout(fetchRecordings, 1_000);
+        } else
             recordings = {
                 obtained: true,
                 error: undefined,
-                recordings: response.data,
+                recordings: response!.data,
             };
     };
 
@@ -108,6 +124,7 @@
         rec_start: string; // ISO 8601
         rec_end: string; // ISO 8601
         status: string;
+        short_status: string;
         stage: number;
         channel: string;
     }
@@ -310,7 +327,6 @@
         buttonClass="font-extrabold"
         on:click={submitForm}>Record</Button
     >
-    <p class="pb-4">Status:</p>
 </div>
 
 {#if statusFlash}
@@ -325,11 +341,15 @@
     </div>
 {/if}
 
-{#await fetchRecordings()}
+{#if !recordings.obtained}
     <p class="italic text-center">Fetching recordings...</p>
-{/await}
-{#if recordings.error}
-    <p>Failed to fetch recordings: {recordings.error}</p>
+{/if}
+{#if recordings.error !== undefined}
+    <p class="text-center font-bold">
+        Failed to fetch recordings: {recordings.error.length > 0
+            ? recordings.error
+            : "Server is down"}
+    </p>
 {/if}
 {#if recordings.recordings?.length === 0}
     <p class="italic text-center">No recordings yet!</p>
@@ -392,6 +412,7 @@
                     </td>
                     <td class="p-2 border-2 border-black dark:border-white">
                         {Stage[recording.stage]}
+                        {recording.short_status.length > 0 ? `(${recording.short_status})` : ""}
                     </td>
                     <td class="p-2 border-2 border-black dark:border-white">
                         <button
@@ -457,7 +478,10 @@
                             </p>
 
                             {#if recording.stage != Stage.Completed}
-                                <p><strong>{Stage[recording.stage]}</strong>: {recording.status}</p>
+                                <p>
+                                    <strong>{Stage[recording.stage]}</strong>
+                                    {recording.status ? `: ${recording.status}` : ""}
+                                </p>
                             {/if}
 
                             <hr />

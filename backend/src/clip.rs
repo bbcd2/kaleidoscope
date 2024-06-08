@@ -31,12 +31,20 @@ use tokio::{
 };
 use warp::reply::Reply;
 
-/// `None` signifies the end of an FFmpeg job
-pub type FfmpegProgressChannels = Arc<RwLock<HashMap<Uuid, UnboundedSender<Option<TimeDelta>>>>>;
 enum JobQueueReport {
     Ready,
     InQueue(usize),
 }
+#[derive(Default)]
+enum ShortStatus {
+    #[default]
+    DoNotChange,
+    Clear,
+    Some(String),
+}
+
+/// `None` signifies the end of an FFmpeg job
+pub type FfmpegProgressChannels = Arc<RwLock<HashMap<Uuid, UnboundedSender<Option<TimeDelta>>>>>;
 type JobQueueChannel = RwLock<VecDeque<(Uuid, UnboundedSender<JobQueueReport>)>>;
 
 const VIDEO_DOWNLOAD_JOB_COUNT: usize = 10;
@@ -54,13 +62,23 @@ struct StatusReporter {
     pub recording_row: RecordingUpdate,
 }
 impl StatusReporter {
-    pub async fn update(&mut self, status: String, stage: Stage) -> Result<()> {
+    pub async fn update(
+        &mut self,
+        status: String,
+        short_status: ShortStatus,
+        stage: Stage,
+    ) -> Result<()> {
         debug!(
             "{uuid}: updating row: {stage:?} {status}",
             uuid = &self.recording_row.uuid
         );
         self.recording_row.stage = stage as i32;
         self.recording_row.status = status;
+        if let ShortStatus::Some(short_status) = short_status {
+            self.recording_row.short_status = short_status;
+        } else if let ShortStatus::Clear = short_status {
+            self.recording_row.short_status = "".to_string();
+        }
         let recording = self.database.update_recording(&self.recording_row)?;
         self.alert(&recording).await?;
         Ok(())
@@ -81,7 +99,7 @@ pub struct ClipParameters {
 
 /// Clip progress stage
 #[derive(Clone, Copy, Debug)]
-#[repr(i32)]
+#[repr(usize)]
 pub enum Stage {
     WaitingQueue = 0,
     // OK statuses
@@ -94,6 +112,8 @@ pub enum Stage {
     /// Separation between OK statuses and error statuses
     #[allow(non_camel_case_types)]
     _SENTINEL_MAX_OK = 7,
+    _A = 8, // for transmute
+    _B = 9, // for transmute
     // Error statuses
     FailedNondescript = 10,
     DownloadingFailed = 11,
@@ -116,8 +136,7 @@ impl Stage {
 /// Convert the timestamp to a segment index (referred to in the digest as $Number$)
 fn calculate_segment_idx(timestamp: usize) -> usize {
     // <SegmentTemplate ... timescale="50" duration="192" />
-    const MAGIC_OFFSET: usize = 38; // 145.92 seconds
-    (((timestamp as f64) / (192. / 50.)).floor() as usize) + MAGIC_OFFSET
+    ((timestamp as f64) / (192. / 50.)).floor() as usize
 }
 
 pub async fn ffmpeg_progress_update_handler(
@@ -163,23 +182,35 @@ async fn wait_in_queue(status_reporter: &mut StatusReporter, uuid: Uuid) -> Resu
         queue_channels.push_back((uuid.clone(), tx));
         queue_channels.len()
     };
+    let queue_pos = len - 1;
+    status_reporter
+        .update(
+            format!("Queue position: {queue_pos}"),
+            ShortStatus::Some(format!("#{queue_pos}")),
+            Stage::WaitingQueue,
+        )
+        .await?;
     if len > MAX_JOB_COUNT {
         loop {
             if let Some(JobQueueReport::InQueue(queue_pos)) = rx.recv().await {
                 info!("{uuid}: waiting in queue pos {queue_pos}");
                 status_reporter
-                    .update(format!("Queue position: {queue_pos}"), Stage::WaitingQueue)
+                    .update(
+                        format!("Queue position: {queue_pos}"),
+                        ShortStatus::Some(format!("#{queue_pos}")),
+                        Stage::WaitingQueue,
+                    )
                     .await?;
                 continue;
             }
             break;
         }
     }
-    info!("{uuid}: queue ready!"); // debugify
+    debug!("{uuid}: queue ready!");
     Ok(())
 }
 async fn advance_queue(pop_uuid: Uuid) -> Result<()> {
-    info!("{pop_uuid}: advancing queue"); // debugify
+    debug!("{pop_uuid}: advancing queue");
 
     let mut queue_channels = JOB_QUEUE_CHANNEL.write().await;
     let pop_idx = queue_channels
@@ -191,7 +222,7 @@ async fn advance_queue(pop_uuid: Uuid) -> Result<()> {
 
     // We just mutated the queue to remove ourself, so the index is subtracted by 1
     for idx in (MAX_JOB_COUNT - 1)..queue_channels.len() {
-        info!("{pop_uuid}: alerting queue pos {idx}"); // debugify
+        debug!("{pop_uuid}: alerting queue pos {idx}");
         let (_, update) = &queue_channels[idx];
         update.send(if idx == (MAX_JOB_COUNT - 1) {
             JobQueueReport::Ready
@@ -214,7 +245,12 @@ async fn download(url: String, path: &Path) -> Result<bool> {
 
     if let Some(e) = async move {
         trace!("downloading {url} to {path}", path = path.display());
-        let mut resp = reqwest::get(&url)
+        let start = Instant::now();
+        let client = reqwest::ClientBuilder::new()
+            .connect_timeout(TimeDelta::seconds(10).to_std()?)
+            .build()?;
+        let mut resp = client
+            .execute(client.get(&url).build()?)
             .await
             .and_then(|resp| resp.error_for_status())
             .with_context(|| anyhow!("request to {url}"))?;
@@ -222,6 +258,7 @@ async fn download(url: String, path: &Path) -> Result<bool> {
             .await
             .with_context(|| anyhow!("creating file {path}", path = path.display()))?;
         let mut chunk_idx = 0;
+        // todo: timeout :)
         while let Some(chunk) = resp.chunk().await? {
             trace!("{url} chunk {chunk_idx}");
             chunk_idx += 1;
@@ -269,7 +306,11 @@ async fn download_segments(
     target_directory: &Path,
 ) -> Result<()> {
     status_reporter
-        .update("Starting download".to_string(), Stage::Downloading)
+        .update(
+            "Starting download".to_string(),
+            ShortStatus::Clear,
+            Stage::Downloading,
+        )
         .await?;
 
     let &SourceEntry { url_prefix, .. } = SOURCES.get(channel).context("failed to find channel")?;
@@ -314,12 +355,16 @@ async fn download_segments(
                 let duration_sec = Instant::now().duration_since(start).as_secs();
                 let count = download_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                 let progress = format!(
-                    "{count}/{} total segments (last finished: {progress} in {duration_sec} sec)",
+                    "{count}/{}",
                     segment_idx_bounds[1] - segment_idx_bounds[0] + 1
                 );
                 let mut status_reporter = status_reporter.lock().await;
                 status_reporter
-                    .update(format!("Downloaded {progress}"), Stage::Downloading)
+                    .update(
+                        format!("Downloaded {progress}  total segments (last finished: {progress} in {duration_sec} sec)"),
+                        ShortStatus::Some(format!("{progress}")),
+                        Stage::Downloading,
+                    )
                     .await?;
 
                 Ok(())
@@ -339,7 +384,11 @@ async fn combine_segments(
     ffmpeg_progress_channels: FfmpegProgressChannels,
 ) -> Result<()> {
     status_reporter
-        .update(format!("Starting segment combination"), Stage::Combining)
+        .update(
+            format!("Starting segment combination"),
+            ShortStatus::Clear,
+            Stage::Combining,
+        )
         .await?;
 
     // Helper to get an FFmpeg builder with default options
@@ -409,21 +458,38 @@ async fn combine_segments(
     status_reporter
         .update(
             format!("Concatenating audio and video segments"),
+            ShortStatus::Some("Concatenating".to_string()),
             Stage::Combining,
         )
         .await?;
 
-    video_concat_job.wait_with_output().await?;
-    audio_concat_job.wait_with_output().await?;
-    let mut time = None;
-    while let Some(Some(progress)) = progress_rx.recv().await {
-        time = Some(progress);
+    let outputs = [
+        video_concat_job.wait_with_output().await?,
+        audio_concat_job.wait_with_output().await?,
+    ];
+    for output in outputs {
+        if !output.status.success() {
+            Err(anyhow!(
+                "concat job failed! {e}",
+                e = std::str::from_utf8(&output.stderr)?
+            ))?;
+        }
     }
-    let time = time.unwrap_or_default();
+    let mut time = None;
+    // If FFmpeg exits "too quickly," then it won't send a progress report and the Rx will be empty
+    while progress_rx.len() > 0 {
+        if let Some(Some(progress)) = progress_rx.recv().await {
+            time = Some(progress);
+        }
+    }
 
-    // Combine concatenated audio and video
+    // Combine or encode concatenated audio and video
     status_reporter
-        .update(format!("Combining and encoding segments"), Stage::Encoding)
+        .update(
+            format!("Combining and encoding segments"),
+            ShortStatus::Clear,
+            Stage::Encoding,
+        )
         .await?;
     let mut combine_job = get_default_builder()
         .input(ffmpeg_cli::File::new(audio_concat_path.to_str().unwrap()))
@@ -446,7 +512,10 @@ async fn combine_segments(
     sleep(TimeDelta::seconds(1).to_std()?).await;
     if let Some(status) = combine_job.try_wait()? {
         if !status.success() {
-            Err(anyhow!("combine job failed! {:?}", combine_job.stderr))?;
+            return Err(anyhow!(
+                "combine job failed! {}",
+                std::str::from_utf8(&combine_job.wait_with_output()?.stderr)?
+            ));
         }
     }
     while let Some(maybe_progress) = progress_rx.recv().await {
@@ -454,13 +523,33 @@ async fn combine_segments(
             Some(progress) => progress,
             None => break,
         };
-        let percentage = (progress.num_seconds() as f32 / time.num_seconds() as f32) * 100.;
+        let percentage =
+            time.map(|time| (progress.num_seconds() as f32 / time.num_seconds() as f32) * 100.);
         status_reporter
             .update(
-                format!("Combining and encoding segments ({percentage:.2}%)"),
+                if let Some(percentage) = percentage {
+                    format!("({percentage:.2}%)")
+                } else {
+                    format!("{} seconds", progress.num_seconds())
+                },
+                if let Some(percentage) = percentage {
+                    ShortStatus::Some(format!("{percentage:.0}%"))
+                } else {
+                    ShortStatus::Clear
+                },
                 Stage::Encoding,
             )
             .await?;
+        if combine_job.try_wait()?.is_some() || percentage.map(|p| p.round()) == Some(100.) {
+            break;
+        }
+    }
+    let output = combine_job.wait_with_output()?;
+    if !output.status.success() {
+        Err(anyhow!(
+            "combine job failed! {}",
+            std::str::from_utf8(&output.stderr)?
+        ))?;
     }
 
     Ok(())
@@ -468,7 +557,11 @@ async fn combine_segments(
 
 async fn upload(status_reporter: &mut StatusReporter, uuid: &str) -> Result<()> {
     status_reporter
-        .update("Uploading result".to_string(), Stage::Uploading)
+        .update(
+            "Uploading result".to_string(),
+            ShortStatus::Clear,
+            Stage::Uploading,
+        )
         .await?;
 
     let output_path = PathBuf::new()
@@ -524,7 +617,8 @@ pub async fn clip(
             rec_start: timestamp_bounds.next().unwrap()?,
             rec_end: timestamp_bounds.next().unwrap()?,
             stage: 0,
-            status: "Pending".to_string(),
+            status: "".to_string(),
+            short_status: "".to_string(),
             uuid: uuid.clone(),
             channel: channel.clone(),
         },
@@ -569,7 +663,7 @@ pub async fn clip(
     let e = match result {
         Ok(_) => {
             status_reporter
-                .update("Done".to_string(), Stage::Complete)
+                .update("Done".to_string(), ShortStatus::Clear, Stage::Complete)
                 .await?;
             info!("{uuid}: done");
             return Ok(());
@@ -580,8 +674,9 @@ pub async fn clip(
     status_reporter
         .update(
             format!("{e:?}"),
+            ShortStatus::Clear,
             Stage::error_variant(unsafe {
-                std::mem::transmute(status_reporter.recording_row.stage)
+                std::mem::transmute(status_reporter.recording_row.stage as usize)
             }),
         )
         .await?;

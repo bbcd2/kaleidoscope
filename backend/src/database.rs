@@ -19,7 +19,10 @@ pub type UserId = i32;
 /// Establish a pool and database connection from `DATABASE_URL`
 pub fn establish_connection() -> Result<PoolPg> {
     let manager = ConnectionManager::<PgConnection>::new(DATABASE_URL.to_string());
-    let pool = PoolPg::new(manager).context("failed to create pool")?;
+    let pool = PoolPg::builder()
+        .max_size(95)
+        .build(manager)
+        .context("failed to create pool")?;
     Ok(pool)
 }
 
@@ -44,7 +47,7 @@ impl Database {
         let recordings_list = recordings
             .offset(start)
             .limit(count)
-            .order_by(id.asc())
+            .order_by(id.desc())
             .load(&mut self.connection)?;
         Ok(recordings_list)
     }
@@ -68,6 +71,7 @@ pub struct Recording {
     pub rec_start: NaiveDateTime,
     pub rec_end: NaiveDateTime,
     pub status: String,
+    pub short_status: String,
     pub stage: i32,
     pub channel: String,
 }
@@ -80,6 +84,7 @@ pub struct RecordingUpdate {
     pub rec_start: NaiveDateTime,
     pub rec_end: NaiveDateTime,
     pub status: String,
+    pub short_status: String,
     pub stage: i32,
     pub channel: String,
 }

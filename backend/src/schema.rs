@@ -8,8 +8,9 @@ diesel::table! {
         uuid -> Bpchar,
         rec_start -> Timestamp,
         rec_end -> Timestamp,
-        #[max_length = 128]
-        status -> Varchar,
+        status -> Text,
+        #[max_length = 32]
+        short_status -> Varchar,
         stage -> Int4,
         #[max_length = 32]
         channel -> Varchar,

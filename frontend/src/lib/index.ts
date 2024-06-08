@@ -22,9 +22,11 @@ export enum Stage {
     /** Separation between OK statuses and error statuses */
     "_SENTINEL_MAX_OK" = 7,
     // Errors
-    "Downloading Failed" = 10,
-    "Encoding Failed" = 11,
-    "Uploading Failed" = 12,
+    "Failed" = 10,
+    "Downloading Failed" = 11,
+    "Combining Failed" = 12,
+    "Encoding Failed" = 13,
+    "Uploading Failed" = 14,
 }
 
 // prettier-ignore
