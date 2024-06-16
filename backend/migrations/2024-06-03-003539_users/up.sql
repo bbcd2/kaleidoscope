@@ -1,3 +1,4 @@
+drop table if exists recordings;
 create table users (
     id serial primary key not null,
     username varchar(32) not null,

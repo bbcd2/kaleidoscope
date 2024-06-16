@@ -1,3 +1,4 @@
+drop table if exists recordings;
 create table recordings (
     id serial primary key not null,
     user_id integer, -- maybe null
